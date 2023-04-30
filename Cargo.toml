@@ -1,0 +1,15 @@
+[package]
+name = "stackchan-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Kenta Ida <fuga@fugafuga.org>"]
+repository = "https://github.com/ciniml/m5stack-avatar-rs"
+license = "MIT OR Apache-2.0"
+description = "Rust implementation of Stackchan (ｽﾀｯｸﾁｬﾝ) firmware"
+
+[dependencies]
+embedded-graphics = "0.7.1"
+num_enum = { version = "0.6.0", default-features = false, features = [] }
+variant_count = "1.1.0"
+m5stack-avatar-rs = { path = "m5stack-avatar-rs" }
+micromath = "2.0.0"

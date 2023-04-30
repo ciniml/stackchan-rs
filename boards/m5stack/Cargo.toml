@@ -1,0 +1,66 @@
+[package]
+name = "stackchan-m5stack"
+version = "0.1.0"
+edition = "2021"
+authors = ["Kenta Ida <fuga@fugafuga.org>"]
+repository = "https://github.com/ciniml/m5stack-avatar-rs"
+license = "MIT OR Apache-2.0"
+description = "Rust implementation of Stackchan (ｽﾀｯｸﾁｬﾝ) firmware for M5Stack Core series"
+
+[dependencies]
+embedded-graphics = "0.7.1"
+num_enum = { version = "0.6.0", default-features = false, features = [] }
+variant_count = { version = "1.1.0", default-features = false, features = [] }
+stackchan-rs = { path = "../.." }
+m5stack-avatar-rs = { path = "../../m5stack-avatar-rs" }
+
+#esp-wifi = { path = "esp-wifi/esp-wifi", features = ["esp32", "wifi"] }
+esp-println = { version = "0.5.0", features = ["esp32"] }
+esp-backtrace = { version = "0.7.0", features = ["esp32", "print-uart", "panic-handler", "exception-handler"] }
+embedded-hal =  { version = "1.0.0-alpha.9" }
+esp32-hal = { version = "0.11.0", features = ["eh1"] }
+micromath = "2.0.0"
+embedded-svc = { version = "0.24.0", default-features = false, features = [] }
+# ili9341 = { git = "https://github.com/yuri91/ili9341-rs.git", branch = "master" }
+bitflags = "2.2.1"
+# display-interface = { path = "../../external/display-interface" }
+# display-interface-spi = { path = "../../external/display-interface/spi" }
+# embedded-hal-bus = { git = "https://github.com/rust-embedded/embedded-hal/", rev = "76541e0766257a89d9f300f9b5ee61e4605b883a" }
+embedded-hal-bus = "0.1.0-alpha.0"
+heapless = "0.7.16"
+critical-section = "1.1.1"
+esp-alloc = "0.3.0"
+
+# [patch.crates-io]
+# embedded-hal = { git = "https://github.com/rust-embedded/embedded-hal/", rev = "bfb276e9218291de34780d9e2b9231aaf3131139" }
+
+# esp-println = { workspace = true, features = [ "esp32" ] }
+# esp-backtrace = { workspace = true, features = ["esp32"] }
+# esp-wifi = { path = "../esp-wifi", features = ["esp32"] }
+# embedded-hal-async = { workspace = true, optional = true }
+
+# [features]
+# default = ["esp32"]
+# esp32 = []
+# async = ["esp-wifi/esp32-async", "bleps/async", "dep:embedded-hal-async", "esp32-hal/async"]
+# embassy-net = ["esp-wifi/embassy-net","dep:embassy-net"]
+# wifi-logs = ["esp-wifi/wifi-logs"]
+# dump-packets = ["esp-wifi/dump-packets"]
+# utils = ["esp-wifi/utils"]
+# enumset = ["esp-wifi/enumset"]
+# embedded-svc = [ "esp-wifi/embedded-svc" ]
+# wifi = ["esp-wifi/wifi"]
+# ble = ["esp-wifi/ble"]
+# phy-enable-usb = ["esp-wifi/phy-enable-usb"]
+# ps-min-modem = ["esp-wifi/ps-min-modem"]
+# esp-now = ["esp-wifi/esp-now"]
+
+[profile.release]
+# Explicitly disable LTO which the Xtensa codegen backend has issues
+debug = true
+lto = "off"
+opt-level = 3
+
+[profile.dev]
+# Explicitly disable LTO which the Xtensa codegen backend has issues
+lto = "off"

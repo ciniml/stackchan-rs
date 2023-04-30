@@ -1,0 +1,12 @@
+[target.xtensa-esp32-none-elf]
+runner = "espflash --use-stub --speed 1500000 --flash-freq 40M --flash-mode DIO --monitor /dev/ttyUSB1 "
+
+[build]
+rustflags = [
+  "-C", "link-arg=-nostartfiles",
+  "-C", "link-arg=-Wl,-Tlinkall.x",
+]
+target = "xtensa-esp32-none-elf"
+
+[unstable]
+build-std = ["core", "alloc"]
