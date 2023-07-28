@@ -108,6 +108,16 @@ pub enum AxpError {
     InvalidVoltage,
 }
 
+impl embedded_hal::digital::Error for AxpError {
+    fn kind(&self) -> embedded_hal::digital::ErrorKind {
+        match self {
+            Self::I2c(_kind) => embedded_hal::digital::ErrorKind::Other,
+            Self::InvalidValue => embedded_hal::digital::ErrorKind::Other,
+            Self::InvalidVoltage => embedded_hal::digital::ErrorKind::Other,
+        }
+    }
+}
+
 impl<I2cError: i2c::Error> From<I2cError> for AxpError {
     fn from(value: I2cError) -> Self {
         Self::I2c(value.kind())

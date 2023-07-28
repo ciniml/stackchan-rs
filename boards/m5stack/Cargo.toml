@@ -17,8 +17,8 @@ m5stack-avatar-rs = { path = "../../m5stack-avatar-rs" }
 #esp-wifi = { path = "esp-wifi/esp-wifi", features = ["esp32", "wifi"] }
 esp-println = { version = "0.5.0", features = ["esp32"] }
 esp-backtrace = { version = "0.7.0", features = ["esp32", "print-uart", "panic-handler", "exception-handler"] }
-embedded-hal =  { version = "1.0.0-alpha.9" }
-esp32-hal = { version = "0.11.0", features = ["eh1"] }
+embedded-hal =  { version = "1.0.0-alpha.10" }
+esp32-hal = { version = "0.13.0", features = ["eh1", "async", "embassy-time-timg0"] }
 micromath = "2.0.0"
 embedded-svc = { version = "0.24.0", default-features = false, features = [] }
 # ili9341 = { git = "https://github.com/yuri91/ili9341-rs.git", branch = "master" }

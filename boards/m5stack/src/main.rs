@@ -14,9 +14,9 @@ use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
 use embedded_graphics::pixelcolor::{Rgb565, BinaryColor};
 use embedded_graphics::prelude::RgbColor;
 use embedded_hal::{digital::OutputPin, spi::{SpiBus, SpiDevice}};
-use esp32_hal::{Timer, interrupt, peripherals, Priority};
-use esp32_hal::gpio::{GpioPin, Bank0GpioRegisterAccess, DualCoreInteruptStatusRegisterAccessBank0, InputOutputAnalogPinType};
-use esp32_hal::soc::gpio::{Gpio13Signals, Gpio14Signals};
+use esp32_hal::interrupt::Priority;
+use esp32_hal::{Timer, interrupt, peripherals};
+use esp32_hal::gpio::{GpioPin, Bank0GpioRegisterAccess,  InputOutputAnalogPinType};
 use esp32_hal::mcpwm::operator::{Operator, PwmPin};
 use esp32_hal::peripherals::{TIMG0, MCPWM0};
 use esp32_hal::timer::{Timer0, Timer1};
@@ -27,7 +27,7 @@ use esp32_hal::{
     peripherals::Peripherals,
     prelude::*,
     timer::TimerGroup,
-    Rtc, i2c::I2C, Delay, pdma::Dma, Spi, spi::{SpiMode, SpiBusController}, dma::DmaPriority, ehal::timer,
+    Rtc, i2c::I2C, Delay, pdma::Dma, Spi, spi::{SpiMode, SpiBusController}, dma::DmaPriority,
 };
 use esp_backtrace as _;
 use esp_println::println;
@@ -45,8 +45,16 @@ static mut HEAP_AREA: [u8; 1024*100] = [0; 1024*100];
 
 
 struct DummyPin {}
+
+#[derive(Debug)]
+enum DummyPinError {}
+impl embedded_hal::digital::Error for DummyPinError {
+    fn kind(&self) -> embedded_hal::digital::ErrorKind {
+        embedded_hal::digital::ErrorKind::Other
+    }
+}
 impl embedded_hal::digital::ErrorType for DummyPin {
-    type Error = ();
+    type Error = DummyPinError;
 }
 impl OutputPin for DummyPin {
     fn set_high(&mut self) -> Result<(), Self::Error> {
@@ -69,8 +77,8 @@ struct ServoTimerContext<'a> {
     timer: Timer<Timer1<TIMG0>>,
     path_gen_tilt: PathGenerator<256>,
     path_gen_pan: PathGenerator<256>,
-    pwm_tilt: esp32_hal::mcpwm::operator::PwmPin<'a, GpioPin<esp32_hal::gpio::Unknown, Bank0GpioRegisterAccess, DualCoreInteruptStatusRegisterAccessBank0, InputOutputAnalogPinType, Gpio14Signals, 14>, esp32_hal::peripherals::MCPWM0, 0, true>,
-    pwm_pan: esp32_hal::mcpwm::operator::PwmPin<'a, GpioPin<esp32_hal::gpio::Unknown, Bank0GpioRegisterAccess, DualCoreInteruptStatusRegisterAccessBank0, InputOutputAnalogPinType, Gpio13Signals, 13>, esp32_hal::peripherals::MCPWM0, 1, true>,
+    pwm_tilt: esp32_hal::mcpwm::operator::PwmPin<'a, GpioPin<esp32_hal::gpio::Unknown, 14>, esp32_hal::peripherals::MCPWM0, 0, true>,
+    pwm_pan: esp32_hal::mcpwm::operator::PwmPin<'a, GpioPin<esp32_hal::gpio::Unknown, 13>, esp32_hal::peripherals::MCPWM0, 1, true>,
     pan_step: u32,
     tilt_step: u32,
 }
@@ -107,6 +115,7 @@ fn main() -> ! {
     let mut timer_group0 = TimerGroup::new(
         peripherals.TIMG0,
         &clocks,
+        &mut system.peripheral_clock_control,
     );
     let mut wdt = timer_group0.wdt;
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
@@ -147,11 +156,11 @@ fn main() -> ! {
     let mut axp = RefCell::new(Axp192::new(i2c, 0x34));
     axp.borrow_mut().reset_core2(|delay_ms| delay.delay_ms(delay_ms) ).unwrap();
 
-    let dma = Dma::new(system.dma, &mut system.peripheral_clock_control);
-    let dma_channel = dma.spi2channel;
+    // let dma = Dma::new(system.dma, &mut system.peripheral_clock_control);
+    // let dma_channel = dma.spi2channel;
 
-    let mut descriptors = [0u32; 8 * 3];
-    let mut rx_descriptors = [0u32; 8 * 3];
+    // let mut descriptors = [0u32; 8 * 3];
+    // let mut rx_descriptors = [0u32; 8 * 3];
 
     let spi_bus = Spi::new_no_cs(
         peripherals.SPI2,

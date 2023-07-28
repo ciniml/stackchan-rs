@@ -126,7 +126,6 @@ const LCD_WIDTH:u16 = 320;
 const LCD_HEIGHT:u16 = 240;
 
 impl<Spi: SpiDevice, DC: OutputPin, RST: OutputPin, Color> Lcd<Spi, DC, RST, Color> 
-    where Spi::Bus: SpiBus
 {
     pub fn new(spi: Spi, mut pin_dc: DC, mut pin_rst: RST, _color: Color) -> Result<Self, LcdError> {
         pin_dc.set_high().unwrap();
@@ -144,9 +143,9 @@ impl<Spi: SpiDevice, DC: OutputPin, RST: OutputPin, Color> Lcd<Spi, DC, RST, Col
 
     pub fn reset<Delay: embedded_hal::delay::DelayUs>(&mut self, delay: &mut Delay) -> Result<(), LcdError> {
         self.pin_rst.set_low().unwrap();
-        delay.delay_ms(150).unwrap();
+        delay.delay_ms(150);
         self.pin_rst.set_high().unwrap();
-        delay.delay_ms(150).unwrap();
+        delay.delay_ms(150);
 
         self.write_cmd_data(0xef, &[0x03, 0x80, 0x02])?;
         self.write_cmd_data(0xcf, &[0x00, 0xc1, 0x30])?;
@@ -170,22 +169,18 @@ impl<Spi: SpiDevice, DC: OutputPin, RST: OutputPin, Color> Lcd<Spi, DC, RST, Col
         self.write_cmd(ILI9341_INVON)?;
         self.write_cmd(ILI9341_SLPOUT)?;
         
-        delay.delay_ms(120).unwrap();
+        delay.delay_ms(120);
         self.write_cmd(ILI9341_DISPON)?;
         self.write_cmd_data(TFT_MADCTL, &[TFT_MAD_BGR])?;
         Ok(())
     }
 
     fn read_id(&mut self) -> Result<[u8;3], LcdError> {
-        let mut buffer = [0, 0, 0]; 
-        self.spi.transaction(|bus| {
-            self.pin_dc.set_low().unwrap();
-            bus.write(&[0x04])?;
-            self.pin_dc.set_high().unwrap();
-            bus.read(&mut buffer)?;
-            Ok(())
-        })
-        .map_err(|err| LcdError::SpiError(err.kind()))?;
+        let mut buffer = [0, 0, 0];
+        self.pin_dc.set_low().unwrap();
+        self.spi.write(&[0x04]).map_err(|err| LcdError::SpiError(err.kind()))?;
+        self.pin_dc.set_high().unwrap();
+        self.spi.read(&mut buffer).map_err(|err| LcdError::SpiError(err.kind()))?;
         Ok(buffer)
     }
 
@@ -215,14 +210,14 @@ impl<Spi: SpiDevice, DC: OutputPin, RST: OutputPin, Color> Lcd<Spi, DC, RST, Col
     fn write_cmd(&mut self, command: u8) -> Result<(), LcdError> {
         let buffer = [command];
         self.pin_dc.set_low().unwrap();
-        self.spi.transaction(|bus| bus.write(&buffer))
+        self.spi.write(&buffer)
             .map_err(|err| LcdError::SpiError(err.kind()))?;
         Ok(())
     }
     
     fn write_data(&mut self, data: &[u8]) -> Result<(), LcdError> {
         self.pin_dc.set_high().unwrap();
-        self.spi.transaction(|bus: &mut <Spi as SpiDevice>::Bus| bus.write(data) )
+        self.spi.write(&data)
             .map_err(|err| LcdError::SpiError(err.kind()))?;
         Ok(())
     }
@@ -230,20 +225,18 @@ impl<Spi: SpiDevice, DC: OutputPin, RST: OutputPin, Color> Lcd<Spi, DC, RST, Col
     fn write_line_buffer(&mut self, range: Range<usize>) -> Result<(), LcdError> {
         self.pin_dc.set_high().unwrap();
         let line_buffer = &self.line_buffer[range];
-        self.spi.transaction(|bus: &mut <Spi as SpiDevice>::Bus| bus.write(line_buffer) )
+        self.spi.write(&line_buffer)
             .map_err(|err| LcdError::SpiError(err.kind()))?;
         Ok(())
     }
 
     fn write_cmd_data(&mut self, command: u8, values: &[u8]) -> Result<(), LcdError> {
-        self.spi.transaction(|bus: &mut <Spi as SpiDevice>::Bus| {
-            self.pin_dc.set_low().unwrap();  
-            bus.write(&[command])?;;
-            self.pin_dc.set_high().unwrap();
-            bus.write(values)?;
-            Ok(())
-        })
-        .map_err(|err| LcdError::SpiError(err.kind()))?;
+        self.pin_dc.set_low().unwrap();
+        self.spi.write(&[command])
+            .map_err(|err| LcdError::SpiError(err.kind()))?;
+        self.pin_dc.set_high().unwrap();
+        self.spi.write(&values)
+            .map_err(|err| LcdError::SpiError(err.kind()))?;
         Ok(())
     }
 
@@ -339,7 +332,6 @@ impl<Spi, DC, RST, Color> Dimensions for Lcd<Spi, DC, RST, Color> {
 
 
 impl<Spi: SpiDevice, DC: OutputPin, RST: OutputPin, Color: PixelColor + Into<Rgb565>> embedded_graphics::draw_target::DrawTarget for Lcd<Spi, DC, RST, Color> 
-    where Spi::Bus: SpiBus
 {
     type Color = Color;
     type Error = LcdError;

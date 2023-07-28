@@ -1,5 +1,5 @@
 [target.xtensa-esp32-none-elf]
-runner = "espflash --use-stub --speed 1500000 --flash-freq 40M --flash-mode DIO --monitor /dev/ttyUSB1 "
+runner = "espflash flash --baud 1500000 --flash-freq 40mhz --flash-mode dio --monitor --port /dev/ttyUSB0"
 
 [build]
 rustflags = [
