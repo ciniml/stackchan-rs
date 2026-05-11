@@ -5,7 +5,22 @@ edition = "2024"
 authors = ["Kenta Ida <fuga@fugafuga.org>"]
 repository = "https://github.com/ciniml/m5stack-avatar-rs"
 license = "MIT OR Apache-2.0"
-description = "Rust implementation of Stackchan (ｽﾀｯｸﾁｬﾝ) firmware for M5Stack Core2"
+description = "Rust implementation of Stackchan firmware for M5Stack Core2 / CoreS3"
+
+[features]
+# Pick exactly one of `core2` or `cores3`. The chip-specific features of
+# esp-hal / esp-backtrace / esp-println are pulled in transitively.
+default = ["core2"]
+core2 = [
+  "esp-hal/esp32",
+  "esp-backtrace/esp32",
+  "esp-println/esp32",
+]
+cores3 = [
+  "esp-hal/esp32s3",
+  "esp-backtrace/esp32s3",
+  "esp-println/esp32s3",
+]
 
 [dependencies]
 embedded-graphics = "0.8"
@@ -18,9 +33,9 @@ stackchan-rs = { path = "../.." }
 m5stack-avatar-rs = { path = "../../m5stack-avatar-rs" }
 m5drivers-rs = { path = "../../m5drivers-rs" }
 
-esp-hal = { version = "1.1", features = ["esp32", "unstable"] }
-esp-backtrace = { version = "0.19", features = ["esp32", "panic-handler", "println"] }
-esp-println = { version = "0.17", features = ["esp32", "log-04"] }
+esp-hal = { version = "1.1", features = ["unstable"] }
+esp-backtrace = { version = "0.19", features = ["panic-handler", "println"] }
+esp-println = { version = "0.17", features = ["log-04"] }
 esp-alloc = "0.10"
 
 micromath = "2.0"
