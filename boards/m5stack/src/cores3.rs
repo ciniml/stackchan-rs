@@ -1,23 +1,29 @@
 //! M5Stack CoreS3 / CoreS3 SE firmware (selected by `--features cores3`).
 //!
 //! Chip drivers (AXP2101 PMIC, AW9523B GPIO expander, ILI9342 LCD) live in `m5drivers-rs`.
-//! Servos are not driven yet — Stackchan's servo wiring on CoreS3 depends on which Grove
-//! port / hat is in use, so add that once the hardware target is fixed.
+//!
+//! Pan/tilt: two SCS0009 servos on UART2 / Grove Port C, driven through `scs-servo`. The
+//! main loop picks a random target every 1.5–4 s and feeds the smoothed path back to the
+//! servos at a 50 ms cadence (catching up if the avatar render holds the loop longer).
 
 use core::cell::RefCell;
+use core::time::Duration as CoreDuration;
 
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::RgbColor;
 use embedded_hal_bus::i2c::RefCellDevice as I2cRefCellDevice;
 use embedded_hal_bus::spi::ExclusiveDevice;
+use esp_hal::Blocking;
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::main;
+use esp_hal::rng::Rng;
 use esp_hal::spi::Mode as SpiMode;
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
-use esp_hal::time::{Instant, Rate};
+use esp_hal::time::{Duration, Instant, Rate};
+use esp_hal::uart::{Config as UartConfig, Uart, UartRx, UartTx};
 use esp_println::println;
 use m5drivers_rs::aw9523::Aw9523Reg;
 use m5drivers_rs::{
@@ -26,6 +32,26 @@ use m5drivers_rs::{
 use m5stack_avatar_rs::components::balloon::BalloonContext;
 use m5stack_avatar_rs::components::face::DrawContext;
 use m5stack_avatar_rs::{Avatar, BasicPaletteKey, Expression, Palette};
+use scs_servo::device::ServoControl;
+use scs_servo::device::scs0009::Scs0009ServoControl;
+use scs_servo::protocol::{ProtocolMasterConfig, StreamReader, StreamWriter};
+use stackchan_rs::path_generator::PathGenerator;
+
+// ---- SCS bus / servo configuration -----------------------------------------
+const SCS_BAUD: u32 = 1_000_000;
+const PAN_ID: u8 = 1;
+const TILT_ID: u8 = 2;
+/// Center of the SCS0009 1024-step range (≈ 180°).
+const SCS_CENTER: u32 = 0x200;
+/// Approximate ±45° in SCS units (1024 steps / 360° ≈ 2.84 unit/deg).
+const PAN_HALF_RANGE: u32 = 128;
+/// Approximate ±15°.
+const TILT_HALF_RANGE: u32 = 43;
+/// Servo command update period.
+const SERVO_TICK_MS: u64 = 50;
+/// Random target update interval bounds.
+const RANDOM_INTERVAL_MIN_MS: u64 = 1500;
+const RANDOM_INTERVAL_MAX_MS: u64 = 4000;
 
 struct InstantTimer;
 impl m5stack_avatar_rs::Timer for InstantTimer {
@@ -34,12 +60,64 @@ impl m5stack_avatar_rs::Timer for InstantTimer {
     }
 }
 
+// ---- scs-servo Timer / Instant adapters using esp-hal time ----------------
+struct ScsClock;
+struct ScsInstant(Instant);
+impl scs_servo::device::Instant for ScsInstant {
+    fn elapsed(&self) -> CoreDuration {
+        CoreDuration::from_micros(self.0.elapsed().as_micros())
+    }
+}
+impl scs_servo::device::Timer for ScsClock {
+    type Instant = ScsInstant;
+    fn now() -> Self::Instant {
+        ScsInstant(Instant::now())
+    }
+}
+
+// ---- StreamReader / StreamWriter that share one UART via RefCell ----------
+struct UartTxRef<'a, 'd>(&'a RefCell<UartTx<'d, Blocking>>);
+struct UartRxRef<'a, 'd>(&'a RefCell<UartRx<'d, Blocking>>);
+
+impl<'a, 'd> StreamWriter for UartTxRef<'a, 'd> {
+    type Error = esp_hal::uart::TxError;
+    fn write(&mut self, data: &[u8]) -> nb::Result<usize, Self::Error> {
+        let mut tx = self.0.borrow_mut();
+        match tx.write(data) {
+            Ok(0) => Err(nb::Error::WouldBlock),
+            Ok(n) => Ok(n),
+            Err(e) => Err(nb::Error::Other(e)),
+        }
+    }
+}
+
+impl<'a, 'd> StreamReader for UartRxRef<'a, 'd> {
+    type Error = esp_hal::uart::RxError;
+    fn read(&mut self, data: &mut [u8]) -> nb::Result<usize, Self::Error> {
+        let mut rx = self.0.borrow_mut();
+        match rx.read_buffered(data) {
+            Ok(0) => Err(nb::Error::WouldBlock),
+            Ok(n) => Ok(n),
+            Err(e) => Err(nb::Error::Other(e)),
+        }
+    }
+}
+
 type AvatarString = heapless::String<64>;
+
+fn pick_random_target(rng: &Rng, center: u32, half_range: u32) -> u32 {
+    let span = half_range.saturating_mul(2);
+    if span == 0 {
+        return center;
+    }
+    let offset = rng.random() % span;
+    center.saturating_sub(half_range).saturating_add(offset)
+}
 
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
-    esp_alloc::heap_allocator!(size: 100 * 1024);
+    esp_alloc::heap_allocator!(size: 64 * 1024);
     let mut delay = Delay::new();
 
     println!("[m5stack-cores3] booting");
@@ -99,6 +177,72 @@ fn main() -> ! {
     display.fill(0, 0, 320, 240, Rgb565::BLACK).unwrap();
     println!("[m5stack-cores3] ILI9342 ready");
 
+    // ---- UART2 for the SCS0009 bus (Grove Port C: TX=GPIO17, RX=GPIO18) ----
+    let uart = Uart::new(
+        peripherals.UART2,
+        UartConfig::default().with_baudrate(SCS_BAUD),
+    )
+    .unwrap()
+    .with_tx(peripherals.GPIO17)
+    .with_rx(peripherals.GPIO18);
+
+    let (uart_rx, uart_tx) = uart.split();
+    let uart_tx = RefCell::new(uart_tx);
+    let uart_rx = RefCell::new(uart_rx);
+
+    let scs_cfg = ProtocolMasterConfig { echo_back: true };
+    let scs_timeout = CoreDuration::from_millis(20);
+    let mut pan = Scs0009ServoControl::<_, _, ScsClock>::new(
+        PAN_ID,
+        UartRxRef(&uart_rx),
+        UartTxRef(&uart_tx),
+        scs_cfg,
+        scs_timeout,
+    );
+    let mut tilt = Scs0009ServoControl::<_, _, ScsClock>::new(
+        TILT_ID,
+        UartRxRef(&uart_rx),
+        UartTxRef(&uart_tx),
+        ProtocolMasterConfig { echo_back: true },
+        scs_timeout,
+    );
+    println!("[m5stack-cores3] step 7: pan probe");
+    // Probe each servo via `output_enable`. If the call times out (e.g. the SCS bus is not
+    // wired up, or the servo IDs differ), keep running the avatar without driving servos.
+    let pan_present = match pan.output_enable() {
+        Ok(()) => true,
+        Err(e) => {
+            println!(
+                "[m5stack-cores3] pan (id={}) not responding ({:?}); disabling pan servo",
+                PAN_ID, e
+            );
+            false
+        }
+    };
+    println!("[m5stack-cores3] step 8: tilt probe");
+    let tilt_present = match tilt.output_enable() {
+        Ok(()) => true,
+        Err(e) => {
+            println!(
+                "[m5stack-cores3] tilt (id={}) not responding ({:?}); disabling tilt servo",
+                TILT_ID, e
+            );
+            false
+        }
+    };
+    let servos_present = pan_present || tilt_present;
+    if !servos_present {
+        println!("[m5stack-cores3] no SCS0009 detected; avatar only");
+    }
+
+    println!("[m5stack-cores3] step 9: rng + path gen");
+    let rng = Rng::new();
+    let mut pan_path = PathGenerator::<256>::new(SCS_CENTER, 2.0, 8.0);
+    let mut tilt_path = PathGenerator::<256>::new(SCS_CENTER, 2.0, 8.0);
+    let mut last_tick = Instant::now();
+    let mut next_random = Instant::now();
+    println!("[m5stack-cores3] SCS bus ready");
+
     // ---- Avatar ------------------------------------------------------------
     let mut context: DrawContext<Rgb565, AvatarString> = DrawContext::default();
     context.palette.set_color(&BasicPaletteKey::Primary, Rgb565::WHITE);
@@ -113,5 +257,52 @@ fn main() -> ! {
 
     loop {
         avatar.run(&mut display, &tick_timer).unwrap();
+
+        if !servos_present {
+            continue;
+        }
+
+        // Pick a new random target when the random timer fires.
+        if Instant::now() >= next_random {
+            let pan_target = pick_random_target(&rng, SCS_CENTER, PAN_HALF_RANGE);
+            let tilt_target = pick_random_target(&rng, SCS_CENTER, TILT_HALF_RANGE);
+            pan_path.begin_move_to(pan_target);
+            tilt_path.begin_move_to(tilt_target);
+            let span = RANDOM_INTERVAL_MAX_MS - RANDOM_INTERVAL_MIN_MS;
+            let extra = (rng.random() as u64) % span;
+            next_random =
+                Instant::now() + Duration::from_millis(RANDOM_INTERVAL_MIN_MS + extra);
+            println!(
+                "[m5stack-cores3] new target pan={} tilt={} next={}ms",
+                pan_target,
+                tilt_target,
+                RANDOM_INTERVAL_MIN_MS + extra
+            );
+        }
+
+        // Catch up on missed servo ticks; render frames may take longer than SERVO_TICK_MS.
+        let elapsed_ms = last_tick.elapsed().as_millis();
+        let ticks_due = (elapsed_ms / SERVO_TICK_MS) as usize;
+        if ticks_due > 0 {
+            last_tick += Duration::from_millis(ticks_due as u64 * SERVO_TICK_MS);
+            let mut pan_pos = pan_path.get_target_position() as u16;
+            let mut tilt_pos = tilt_path.get_target_position() as u16;
+            for _ in 0..ticks_due {
+                if pan_path.is_moving() {
+                    pan_pos = pan_path.step_next() as u16;
+                }
+                if tilt_path.is_moving() {
+                    tilt_pos = tilt_path.step_next() as u16;
+                }
+            }
+            if pan_present {
+                let _ = pan.set_target_period(SERVO_TICK_MS as u16);
+                let _ = pan.set_target_position(pan_pos);
+            }
+            if tilt_present {
+                let _ = tilt.set_target_period(SERVO_TICK_MS as u16);
+                let _ = tilt.set_target_position(tilt_pos);
+            }
+        }
     }
 }

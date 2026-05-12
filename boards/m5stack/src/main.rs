@@ -11,6 +11,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 use esp_backtrace as _;
 use esp_alloc as _;
 
