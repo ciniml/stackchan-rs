@@ -36,6 +36,7 @@ use scs_servo::device::ServoControl;
 use scs_servo::device::scs0009::Scs0009ServoControl;
 use scs_servo::protocol::{ProtocolMasterConfig, StreamReader, StreamWriter};
 use stackchan_rs::path_generator::PathGenerator;
+use static_cell::StaticCell;
 
 // ---- SCS bus / servo configuration -----------------------------------------
 const SCS_BAUD: u32 = 1_000_000;
@@ -105,6 +106,38 @@ impl<'a, 'd> StreamReader for UartRxRef<'a, 'd> {
 
 type AvatarString = heapless::String<64>;
 
+// ---- Static placement for the large stateful objects ----------------------
+// These live in BSS via `static_cell::StaticCell` so they don't sit in `main`'s stack
+// frame. opt-level=3 used to inline `main` to a single frame large enough to overflow
+// the stack inside esp-hal's `Uart::new`; moving them to BSS makes the layout stable.
+type I2cBusTy = I2c<'static, Blocking>;
+type I2cBusCell = RefCell<I2cBusTy>;
+type I2cDeviceTy = I2cRefCellDevice<'static, I2cBusTy>;
+type Aw9523Cell = RefCell<Aw9523<I2cDeviceTy>>;
+type Axp2101Ty = Axp2101<I2cDeviceTy>;
+type SpiBusTy = Spi<'static, Blocking>;
+type SpiDeviceTy = ExclusiveDevice<SpiBusTy, Output<'static>, Delay>;
+type LcdRstTy = Aw9523Pin<'static, I2cDeviceTy>;
+type DisplayTy = Ili9342<SpiDeviceTy, Output<'static>, LcdRstTy>;
+type AvatarTy = Avatar<'static, Rgb565, AvatarString>;
+type UartTxCell = RefCell<UartTx<'static, Blocking>>;
+type UartRxCell = RefCell<UartRx<'static, Blocking>>;
+type ScsServoTy = Scs0009ServoControl<
+    UartRxRef<'static, 'static>,
+    UartTxRef<'static, 'static>,
+    ScsClock,
+>;
+
+static I2C_BUS: StaticCell<I2cBusCell> = StaticCell::new();
+static AW_CELL: StaticCell<Aw9523Cell> = StaticCell::new();
+static AXP: StaticCell<Axp2101Ty> = StaticCell::new();
+static DISPLAY: StaticCell<DisplayTy> = StaticCell::new();
+static AVATAR: StaticCell<AvatarTy> = StaticCell::new();
+static UART_TX: StaticCell<UartTxCell> = StaticCell::new();
+static UART_RX: StaticCell<UartRxCell> = StaticCell::new();
+static PAN: StaticCell<ScsServoTy> = StaticCell::new();
+static TILT: StaticCell<ScsServoTy> = StaticCell::new();
+
 fn pick_random_target(rng: &Rng, center: u32, half_range: u32) -> u32 {
     let span = half_range.saturating_mul(2);
     if span == 0 {
@@ -123,20 +156,20 @@ fn main() -> ! {
     println!("[m5stack-cores3] booting");
 
     // ---- Internal I2C bus (AXP2101 + AW9523B): SDA=GPIO12, SCL=GPIO11 -------
-    let i2c_bus = I2c::new(
+    let i2c_bus_local = I2c::new(
         peripherals.I2C0,
         I2cConfig::default().with_frequency(Rate::from_khz(400)),
     )
     .unwrap()
     .with_sda(peripherals.GPIO12)
     .with_scl(peripherals.GPIO11);
-    let i2c_bus = RefCell::new(i2c_bus);
+    let i2c_bus: &'static I2cBusCell = I2C_BUS.init(RefCell::new(i2c_bus_local));
 
     // ---- AW9523B init (matches M5GFX `M5GFX.cpp` CoreS3 setup) -------------
-    let aw = RefCell::new(Aw9523::new(
-        I2cRefCellDevice::new(&i2c_bus),
+    let aw: &'static Aw9523Cell = AW_CELL.init(RefCell::new(Aw9523::new(
+        I2cRefCellDevice::new(i2c_bus),
         AW9523_DEFAULT_ADDR,
-    ));
+    )));
     {
         let mut a = aw.borrow_mut();
         a.write_reg(Aw9523Reg::P0Direction, 0b0001_1000).unwrap();
@@ -148,7 +181,10 @@ fn main() -> ! {
     println!("[m5stack-cores3] AW9523B configured");
 
     // ---- AXP2101: chip ID + CoreS3 power-on + backlight --------------------
-    let mut axp = Axp2101::new(I2cRefCellDevice::new(&i2c_bus), AXP2101_DEFAULT_ADDR);
+    let axp: &'static mut Axp2101Ty = AXP.init(Axp2101::new(
+        I2cRefCellDevice::new(i2c_bus),
+        AXP2101_DEFAULT_ADDR,
+    ));
     match axp.chip_id() {
         Ok(id) => println!("[m5stack-cores3] AXP2101 chip id = 0x{:02X} (expect 0x4A)", id),
         Err(e) => panic!("AXP2101 chip id read failed: {:?}", e),
@@ -170,43 +206,40 @@ fn main() -> ! {
     let spi_dev = ExclusiveDevice::new(spi_bus, cs, Delay::new()).unwrap();
 
     let dc = Output::new(peripherals.GPIO35, Level::Low, OutputConfig::default());
-    let rst = Aw9523Pin::new(&aw, Pin::p1(5));
+    let rst = Aw9523Pin::new(aw, Pin::p1(5));
 
-    let mut display = Ili9342::new(spi_dev, dc, rst);
+    let display: &'static mut DisplayTy = DISPLAY.init(Ili9342::new(spi_dev, dc, rst));
     display.init(&mut delay).unwrap();
     display.fill(0, 0, 320, 240, Rgb565::BLACK).unwrap();
     println!("[m5stack-cores3] ILI9342 ready");
 
     // ---- UART2 for the SCS0009 bus (Grove Port C: TX=GPIO17, RX=GPIO18) ----
-    let uart = Uart::new(
+    let uart_local = Uart::new(
         peripherals.UART2,
         UartConfig::default().with_baudrate(SCS_BAUD),
     )
     .unwrap()
     .with_tx(peripherals.GPIO17)
     .with_rx(peripherals.GPIO18);
+    let (uart_rx_local, uart_tx_local) = uart_local.split();
+    let uart_tx: &'static UartTxCell = UART_TX.init(RefCell::new(uart_tx_local));
+    let uart_rx: &'static UartRxCell = UART_RX.init(RefCell::new(uart_rx_local));
 
-    let (uart_rx, uart_tx) = uart.split();
-    let uart_tx = RefCell::new(uart_tx);
-    let uart_rx = RefCell::new(uart_rx);
-
-    let scs_cfg = ProtocolMasterConfig { echo_back: true };
     let scs_timeout = CoreDuration::from_millis(20);
-    let mut pan = Scs0009ServoControl::<_, _, ScsClock>::new(
+    let pan: &'static mut ScsServoTy = PAN.init(Scs0009ServoControl::<_, _, ScsClock>::new(
         PAN_ID,
-        UartRxRef(&uart_rx),
-        UartTxRef(&uart_tx),
-        scs_cfg,
-        scs_timeout,
-    );
-    let mut tilt = Scs0009ServoControl::<_, _, ScsClock>::new(
-        TILT_ID,
-        UartRxRef(&uart_rx),
-        UartTxRef(&uart_tx),
+        UartRxRef(uart_rx),
+        UartTxRef(uart_tx),
         ProtocolMasterConfig { echo_back: true },
         scs_timeout,
-    );
-    println!("[m5stack-cores3] step 7: pan probe");
+    ));
+    let tilt: &'static mut ScsServoTy = TILT.init(Scs0009ServoControl::<_, _, ScsClock>::new(
+        TILT_ID,
+        UartRxRef(uart_rx),
+        UartTxRef(uart_tx),
+        ProtocolMasterConfig { echo_back: true },
+        scs_timeout,
+    ));
     // Probe each servo via `output_enable`. If the call times out (e.g. the SCS bus is not
     // wired up, or the servo IDs differ), keep running the avatar without driving servos.
     let pan_present = match pan.output_enable() {
@@ -219,7 +252,6 @@ fn main() -> ! {
             false
         }
     };
-    println!("[m5stack-cores3] step 8: tilt probe");
     let tilt_present = match tilt.output_enable() {
         Ok(()) => true,
         Err(e) => {
@@ -235,13 +267,11 @@ fn main() -> ! {
         println!("[m5stack-cores3] no SCS0009 detected; avatar only");
     }
 
-    println!("[m5stack-cores3] step 9: rng + path gen");
     let rng = Rng::new();
     let mut pan_path = PathGenerator::<256>::new(SCS_CENTER, 2.0, 8.0);
     let mut tilt_path = PathGenerator::<256>::new(SCS_CENTER, 2.0, 8.0);
     let mut last_tick = Instant::now();
     let mut next_random = Instant::now();
-    println!("[m5stack-cores3] SCS bus ready");
 
     // ---- Avatar ------------------------------------------------------------
     let mut context: DrawContext<Rgb565, AvatarString> = DrawContext::default();
@@ -252,11 +282,11 @@ fn main() -> ! {
     context.palette.set_color(&BasicPaletteKey::BalloonBackground, Rgb565::BLACK);
     context.set_text(Some("Rusty Stack-chan!"));
     context.expression = Expression::Happy;
-    let mut avatar = Avatar::new(context, 30);
+    let avatar: &'static mut AvatarTy = AVATAR.init(Avatar::new(context, 30));
     let tick_timer = InstantTimer;
 
     loop {
-        avatar.run(&mut display, &tick_timer).unwrap();
+        avatar.run(display, &tick_timer).unwrap();
 
         if !servos_present {
             continue;

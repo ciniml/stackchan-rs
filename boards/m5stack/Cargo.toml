@@ -34,6 +34,7 @@ m5stack-avatar-rs = { path = "../../m5stack-avatar-rs" }
 m5drivers-rs = { path = "../../m5drivers-rs" }
 scs-servo = { path = "../../../scs-servo-rs/scs-servo" }
 nb = "1"
+static_cell = "2"
 
 esp-hal = { version = "1.1", features = ["unstable"] }
 esp-backtrace = { version = "0.19", features = ["panic-handler", "println"] }
