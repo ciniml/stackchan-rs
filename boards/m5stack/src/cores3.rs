@@ -24,7 +24,7 @@ use esp_hal::spi::Mode as SpiMode;
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::time::{Duration, Instant, Rate};
 use esp_hal::uart::{Config as UartConfig, Uart, UartRx, UartTx};
-use esp_println::println;
+use log::{debug, info, warn};
 use m5drivers_rs::aw9523::Aw9523Reg;
 use m5drivers_rs::{
     AW9523_DEFAULT_ADDR, AXP2101_DEFAULT_ADDR, Aw9523, Aw9523Pin, Axp2101, Ili9342, Pin,
@@ -151,9 +151,10 @@ fn pick_random_target(rng: &Rng, center: u32, half_range: u32) -> u32 {
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
     esp_alloc::heap_allocator!(size: 64 * 1024);
+    esp_println::logger::init_logger(log::LevelFilter::Info);
     let mut delay = Delay::new();
 
-    println!("[m5stack-cores3] booting");
+    info!("booting");
 
     // ---- Internal I2C bus (AXP2101 + AW9523B): SDA=GPIO12, SCL=GPIO11 -------
     let i2c_bus_local = I2c::new(
@@ -178,7 +179,7 @@ fn main() -> ! {
         a.write_reg(Aw9523Reg::P0Output, 0b0000_0111).unwrap();
         a.write_reg(Aw9523Reg::P1Output, 0b0010_0011).unwrap();
     }
-    println!("[m5stack-cores3] AW9523B configured");
+    info!("AW9523B configured");
 
     // ---- AXP2101: chip ID + CoreS3 power-on + backlight --------------------
     let axp: &'static mut Axp2101Ty = AXP.init(Axp2101::new(
@@ -186,7 +187,7 @@ fn main() -> ! {
         AXP2101_DEFAULT_ADDR,
     ));
     match axp.chip_id() {
-        Ok(id) => println!("[m5stack-cores3] AXP2101 chip id = 0x{:02X} (expect 0x4A)", id),
+        Ok(id) => info!("AXP2101 chip id = 0x{:02X} (expect 0x4A)", id),
         Err(e) => panic!("AXP2101 chip id read failed: {:?}", e),
     }
     axp.power_on_cores3().unwrap();
@@ -211,7 +212,7 @@ fn main() -> ! {
     let display: &'static mut DisplayTy = DISPLAY.init(Ili9342::new(spi_dev, dc, rst));
     display.init(&mut delay).unwrap();
     display.fill(0, 0, 320, 240, Rgb565::BLACK).unwrap();
-    println!("[m5stack-cores3] ILI9342 ready");
+    info!("ILI9342 ready");
 
     // ---- UART2 for the SCS0009 bus (Grove Port C: TX=GPIO17, RX=GPIO18) ----
     let uart_local = Uart::new(
@@ -245,8 +246,8 @@ fn main() -> ! {
     let pan_present = match pan.output_enable() {
         Ok(()) => true,
         Err(e) => {
-            println!(
-                "[m5stack-cores3] pan (id={}) not responding ({:?}); disabling pan servo",
+            warn!(
+                "pan (id={}) not responding ({:?}); disabling pan servo",
                 PAN_ID, e
             );
             false
@@ -255,8 +256,8 @@ fn main() -> ! {
     let tilt_present = match tilt.output_enable() {
         Ok(()) => true,
         Err(e) => {
-            println!(
-                "[m5stack-cores3] tilt (id={}) not responding ({:?}); disabling tilt servo",
+            warn!(
+                "tilt (id={}) not responding ({:?}); disabling tilt servo",
                 TILT_ID, e
             );
             false
@@ -264,7 +265,7 @@ fn main() -> ! {
     };
     let servos_present = pan_present || tilt_present;
     if !servos_present {
-        println!("[m5stack-cores3] no SCS0009 detected; avatar only");
+        warn!("no SCS0009 detected; avatar only");
     }
 
     let rng = Rng::new();
@@ -302,8 +303,8 @@ fn main() -> ! {
             let extra = (rng.random() as u64) % span;
             next_random =
                 Instant::now() + Duration::from_millis(RANDOM_INTERVAL_MIN_MS + extra);
-            println!(
-                "[m5stack-cores3] new target pan={} tilt={} next={}ms",
+            debug!(
+                "new target pan={} tilt={} next={}ms",
                 pan_target,
                 tilt_target,
                 RANDOM_INTERVAL_MIN_MS + extra

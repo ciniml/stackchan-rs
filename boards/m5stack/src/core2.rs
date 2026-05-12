@@ -19,7 +19,7 @@ use esp_hal::peripherals::MCPWM0;
 use esp_hal::spi::Mode as SpiMode;
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::time::{Instant, Rate};
-use esp_println::println;
+use log::info;
 use m5drivers_rs::axp192::{self, Axp192, Axp192Gpio};
 use m5drivers_rs::ili9341::Ili9341;
 use m5stack_avatar_rs::components::balloon::BalloonContext;
@@ -51,9 +51,10 @@ fn main() -> ! {
     let peripherals =
         esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
     esp_alloc::heap_allocator!(size: 100 * 1024);
+    esp_println::logger::init_logger(log::LevelFilter::Info);
     let mut delay = Delay::new();
 
-    println!("[m5stack-core2] booting");
+    info!("booting");
 
     // ---- I2C0 for the AXP192 PMIC ------------------------------------------
     let i2c = I2c::new(
@@ -69,7 +70,7 @@ fn main() -> ! {
         let mut a = axp.borrow_mut();
         a.reset_core2(|ms| delay.delay_millis(ms)).unwrap();
     }
-    println!("[m5stack-core2] AXP192 ready");
+    info!("AXP192 ready");
 
     // ---- SPI2 for the ILI9341 LCD ------------------------------------------
     let spi_bus = Spi::new(
@@ -91,7 +92,7 @@ fn main() -> ! {
     let mut display = Ili9341::new(spi_dev, dc, lcd_rst);
     display.init(&mut delay).unwrap();
     display.fill(0, 0, 320, 240, Rgb565::BLACK).unwrap();
-    println!("[m5stack-core2] ILI9341 ready");
+    info!("ILI9341 ready");
 
     // ---- MCPWM0 for the pan/tilt servos ------------------------------------
     let clock_cfg = PeripheralClockConfig::with_frequency(Rate::from_mhz(2)).unwrap();
