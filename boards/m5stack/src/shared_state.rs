@@ -3,7 +3,10 @@
 //! and consumer tasks (render, servo) read. There is no central queue — commands are
 //! posted by storing into fields, consumed by the owning task on its own tick.
 
+use core::cell::RefCell;
 use core::sync::atomic::{AtomicI8, AtomicU8, AtomicU32, Ordering};
+
+use critical_section::Mutex as CsMutex;
 
 use m5stack_avatar_rs::Expression;
 
@@ -36,6 +39,13 @@ pub struct SharedState {
     /// Gaze override, -100..=100 mapped to the avatar's -1.0..=1.0 range.
     gaze_h: AtomicI8,
     gaze_v: AtomicI8,
+    /// Balloon text mailbox (empty string = no balloon). `balloon_version` bumps on
+    /// every post so the render task can detect changes without holding the lock.
+    balloon: CsMutex<RefCell<heapless::String<96>>>,
+    balloon_version: AtomicU32,
+    /// Face bytecode mailbox (`AVDS` v1; empty = reset to the embedded default face).
+    face: CsMutex<RefCell<alloc::vec::Vec<u8>>>,
+    face_version: AtomicU32,
 }
 
 /// Sounds the audio task can play.
@@ -84,6 +94,10 @@ impl SharedState {
             gaze_active: AtomicU8::new(0),
             gaze_h: AtomicI8::new(0),
             gaze_v: AtomicI8::new(0),
+            balloon: CsMutex::new(RefCell::new(heapless::String::new())),
+            balloon_version: AtomicU32::new(0),
+            face: CsMutex::new(RefCell::new(alloc::vec::Vec::new())),
+            face_version: AtomicU32::new(0),
         }
     }
 
@@ -173,6 +187,46 @@ impl SharedState {
             }
             None => self.gaze_active.store(0, Ordering::Release),
         }
+    }
+
+    /// Post balloon text (empty string clears the balloon).
+    pub fn post_balloon(&self, text: &str) {
+        critical_section::with(|cs| {
+            let mut b = self.balloon.borrow_ref_mut(cs);
+            b.clear();
+            let _ = b.push_str(text);
+        });
+        self.balloon_version.fetch_add(1, Ordering::Release);
+    }
+
+    /// Returns the balloon text if it changed since `*seen` (empty = clear balloon).
+    pub fn take_balloon(&self, seen: &mut u32) -> Option<heapless::String<96>> {
+        let version = self.balloon_version.load(Ordering::Acquire);
+        if version == *seen {
+            return None;
+        }
+        *seen = version;
+        Some(critical_section::with(|cs| self.balloon.borrow_ref(cs).clone()))
+    }
+
+    /// Post face bytecode (empty slice = reset to the default face).
+    pub fn post_face(&self, bytes: &[u8]) {
+        critical_section::with(|cs| {
+            let mut f = self.face.borrow_ref_mut(cs);
+            f.clear();
+            f.extend_from_slice(bytes);
+        });
+        self.face_version.fetch_add(1, Ordering::Release);
+    }
+
+    /// Returns the face bytecode if it changed since `*seen` (empty = reset).
+    pub fn take_face(&self, seen: &mut u32) -> Option<alloc::vec::Vec<u8>> {
+        let version = self.face_version.load(Ordering::Acquire);
+        if version == *seen {
+            return None;
+        }
+        *seen = version;
+        Some(critical_section::with(|cs| self.face.borrow_ref(cs).clone()))
     }
 
     pub fn gaze(&self) -> Option<(f32, f32)> {

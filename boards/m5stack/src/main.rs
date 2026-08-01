@@ -97,6 +97,8 @@ fn main() -> ! {
             spawner.spawn(tasks::input::input(touch, board.limits).unwrap());
         }
 
+        shared_state::STATE.post_balloon("Rusty Stack-chan!");
+
         if let Some(speaker) = board.speaker {
             shared_state::STATE.post_sound(shared_state::Sound::Arpeggio);
             spawner.spawn(tasks::audio::audio(speaker).unwrap());

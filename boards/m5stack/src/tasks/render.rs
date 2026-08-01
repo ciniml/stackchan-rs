@@ -1,54 +1,53 @@
-//! Avatar render task: owns the display and the avatar, draws at 30 fps, and applies
-//! face state (expression) from [`STATE`] each frame.
+//! Avatar render task: owns the display and the stackchan-idf–style avatar, draws at
+//! 30 fps, and applies face state (expression, mouth, gaze, balloon) from [`STATE`]
+//! each frame.
 
-use embassy_time::{Duration, Ticker};
+use embassy_time::{Duration, Instant, Ticker};
+use log::{info, warn};
 use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::RgbColor;
-use m5stack_avatar_rs::components::balloon::BalloonContext;
-use m5stack_avatar_rs::components::face::DrawContext;
-use m5stack_avatar_rs::{Avatar, BasicPaletteKey, Palette};
+use m5stack_avatar_rs::stackchan::StackchanAvatar;
 
 use crate::board::DisplayTy;
 use crate::shared_state::STATE;
 
 const FRAME_MS: u64 = 33; // ~30 fps
 
-type AvatarString = heapless::String<64>;
-
-struct EmbassyTimer;
-impl m5stack_avatar_rs::Timer for EmbassyTimer {
-    fn timestamp_milliseconds(&self) -> u64 {
-        embassy_time::Instant::now().as_millis()
-    }
-}
-
 #[embassy_executor::task]
 pub async fn render(display: &'static mut DisplayTy) {
-    let mut context: DrawContext<Rgb565, AvatarString> = DrawContext::default();
-    context.palette.set_color(&BasicPaletteKey::Primary, Rgb565::WHITE);
-    context.palette.set_color(&BasicPaletteKey::Secondary, Rgb565::WHITE);
-    context.palette.set_color(&BasicPaletteKey::Background, Rgb565::BLACK);
-    context.palette.set_color(&BasicPaletteKey::BalloonForeground, Rgb565::WHITE);
-    context.palette.set_color(&BasicPaletteKey::BalloonBackground, Rgb565::BLACK);
-    context.set_text(Some("Rusty Stack-chan!"));
-    context.expression = STATE.expression();
-    let mut avatar: Avatar<'static, Rgb565, AvatarString> = Avatar::new(context, 30);
-    let timer = EmbassyTimer;
+    let mut avatar: StackchanAvatar<Rgb565> = StackchanAvatar::new();
+    let mut balloon_seen = 0u32;
+    let mut face_seen = 0u32;
 
     let mut ticker = Ticker::every(Duration::from_millis(FRAME_MS));
     loop {
-        let context = avatar.context();
-        context.expression = STATE.expression();
-        context.mouth_open_ratio = STATE.mouth_open_pct() as f32 / 100.0;
+        avatar.set_expression(STATE.expression());
+        avatar.set_mouth_open(STATE.mouth_open_pct() as f32 / 100.0);
+        // External gaze target; the avatar's saccade animator wanders around it.
         match STATE.gaze() {
-            Some((h, v)) => {
-                context.gaze_override = true;
-                context.gaze_horizontal = h;
-                context.gaze_vertical = v;
-            }
-            None => context.gaze_override = false,
+            Some((h, v)) => avatar.set_gaze(h, v),
+            None => avatar.set_gaze(0.0, 0.0),
         }
-        avatar.run(display, &timer).unwrap();
+        if let Some(bytes) = STATE.take_face(&mut face_seen) {
+            if bytes.is_empty() {
+                avatar.reset_face_bytecode();
+                info!("face bytecode reset to default");
+            } else {
+                match avatar.load_face_bytecode(&bytes) {
+                    Ok(()) => info!("face bytecode loaded ({} bytes)", bytes.len()),
+                    Err(e) => warn!("face bytecode rejected: {:?}", e),
+                }
+            }
+        }
+        if let Some(text) = STATE.take_balloon(&mut balloon_seen) {
+            if text.is_empty() {
+                avatar.clear_balloon();
+            } else {
+                avatar.set_balloon_text(&text, 0);
+            }
+        }
+        avatar
+            .tick(Instant::now().as_millis() as u32, display)
+            .unwrap();
         ticker.next().await;
     }
 }

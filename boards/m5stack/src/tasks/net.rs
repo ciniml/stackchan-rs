@@ -14,6 +14,10 @@
 //! - `POST /api/volume/<0-100>`     → set speaker volume (persisted on reboot)
 //! - `POST /api/wifi/<ssid>/<pass>` → set Wi-Fi credentials (persisted + applied on
 //!   reboot; no URL-decoding — avoid `/`, `%`, spaces in credentials for now)
+//! - `POST /api/face`               → hot-swap the face bytecode (binary `AVDS` v1 body,
+//!   e.g. `curl --data-binary @face.avbc`); `POST /api/face/reset` restores the default
+//! - `POST /api/balloon/<text>`     → show balloon text (ASCII; `_` renders as space);
+//!   `POST /api/balloon/clear` clears it
 //! - `POST /api/reboot`             → persist changed settings, then software reset
 //!
 //! Settings are deliberately written to flash only in the reboot path: a flash write
@@ -148,9 +152,10 @@ pub async fn net(
 
 async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config) -> ! {
     let loaded_config = config.clone();
-    let mut rx_buffer = [0u8; 1024];
+    let mut rx_buffer = [0u8; 2048];
     let mut tx_buffer = [0u8; 1024];
-    let mut req = [0u8; 1024];
+    // Large enough for the request head plus a face-bytecode upload body (~2-4 KiB).
+    let mut req = [0u8; 8192];
     loop {
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(10)));
@@ -159,7 +164,7 @@ async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config
             continue;
         }
 
-        // Read the request head (we only care about the request line; ignore body).
+        // Read the request head.
         let mut used = 0usize;
         let head_end = loop {
             match socket.read(&mut req[used..]).await {
@@ -180,14 +185,50 @@ async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config
             }
         };
 
-        if head_end.is_some()
-            && let Ok(text) = core::str::from_utf8(&req[..used])
-            && let Some(line) = text.lines().next()
-        {
+        // Parse the head into owned values so the buffer can keep receiving the body.
+        let parsed = head_end.and_then(|head_end| {
+            let head = core::str::from_utf8(&req[..head_end]).ok()?;
+            let line = head.lines().next()?;
             let mut parts = line.split(' ');
-            let method = parts.next().unwrap_or("");
-            let path = parts.next().unwrap_or("");
-            let (status, body, reboot) = handle_request(method, path, &mut config);
+            let method: heapless::String<8> =
+                heapless::String::try_from(parts.next().unwrap_or("")).ok()?;
+            let path: heapless::String<128> =
+                heapless::String::try_from(parts.next().unwrap_or("")).ok()?;
+            let content_length: usize = head
+                .lines()
+                .find_map(|l| {
+                    let (name, value) = l.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().ok())?
+                })
+                .unwrap_or(0);
+            Some((head_end, method, path, content_length))
+        });
+
+        if let Some((head_end, method, path, content_length)) = parsed {
+            let (method, path) = (method.as_str(), path.as_str());
+
+            // Read the request body when Content-Length is present (bounded by `req`).
+            let body_start = head_end + 4;
+            let body_end = body_start + content_length;
+            let body_ok = body_end <= req.len();
+            while body_ok && used < body_end {
+                match socket.read(&mut req[used..]).await {
+                    Ok(0) => break,
+                    Ok(n) => used += n,
+                    Err(e) => {
+                        warn!("body read failed: {:?}", e);
+                        break;
+                    }
+                }
+            }
+            let request_body: &[u8] = if body_ok && used >= body_end {
+                &req[body_start..body_end]
+            } else {
+                &[]
+            };
+
+            let (status, body, reboot) = handle_request(method, path, request_body, &mut config);
             let mut resp: heapless::String<512> = heapless::String::new();
             let _ = write!(
                 resp,
@@ -227,9 +268,10 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 fn handle_request(
     method: &str,
     path: &str,
+    request_body: &[u8],
     config: &mut Config,
 ) -> (&'static str, heapless::String<256>, bool) {
-    let (status, body) = route(method, path, config);
+    let (status, body) = route(method, path, request_body, config);
     let reboot = method == "POST" && path == "/api/reboot" && status.starts_with("200");
     (status, body, reboot)
 }
@@ -237,6 +279,7 @@ fn handle_request(
 fn route(
     method: &str,
     path: &str,
+    request_body: &[u8],
     config: &mut Config,
 ) -> (&'static str, heapless::String<256>) {
     let mut body: heapless::String<256> = heapless::String::new();
@@ -323,6 +366,40 @@ fn route(
                     ("400 Bad Request", body)
                 }
             }
+        }
+        ("POST", "/api/face/reset") => {
+            STATE.post_face(&[]);
+            let _ = write!(body, "{{\"face\":\"default\"}}");
+            ("200 OK", body)
+        }
+        ("POST", "/api/face") => {
+            // Body must be an `AVDS` v1 bytecode file from tools/avatar_dsl.
+            match m5stack_avatar_rs::stackchan::vm::decode(request_body) {
+                Ok(_) => {
+                    STATE.post_face(request_body);
+                    let _ = write!(body, "{{\"face\":\"loaded\",\"bytes\":{}}}", request_body.len());
+                    ("200 OK", body)
+                }
+                Err(e) => {
+                    let _ = write!(body, "{{\"error\":\"bad bytecode: {:?}\"}}", e);
+                    ("400 Bad Request", body)
+                }
+            }
+        }
+        ("POST", "/api/balloon/clear") => {
+            STATE.post_balloon("");
+            let _ = write!(body, "{{\"balloon\":null}}");
+            ("200 OK", body)
+        }
+        ("POST", _) if path.starts_with("/api/balloon/") => {
+            let raw = &path["/api/balloon/".len()..];
+            let mut text: heapless::String<96> = heapless::String::new();
+            for c in raw.chars().take(96) {
+                let _ = text.push(if c == '_' { ' ' } else { c });
+            }
+            STATE.post_balloon(&text);
+            let _ = write!(body, "{{\"balloon\":\"{}\"}}", text);
+            ("200 OK", body)
         }
         ("POST", "/api/sound/arpeggio") => {
             STATE.post_sound(Sound::Arpeggio);
