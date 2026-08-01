@@ -15,17 +15,26 @@ core2 = [
   "esp-hal/esp32",
   "esp-backtrace/esp32",
   "esp-println/esp32",
+  "esp-rtos/esp32",
+  "esp-radio/esp32",
+  "esp-storage/esp32",
+  "esp-bootloader-esp-idf/esp32",
 ]
 cores3 = [
   "esp-hal/esp32s3",
   "esp-backtrace/esp32s3",
   "esp-println/esp32s3",
+  "esp-rtos/esp32s3",
+  "esp-radio/esp32s3",
+  "esp-storage/esp32s3",
+  "esp-bootloader-esp-idf/esp32s3",
 ]
 
 [dependencies]
 embedded-graphics = "0.8"
 embedded-hal = "1.0"
 embedded-hal-bus = "0.3"
+embedded-io-async = "0.7"
 num_enum = { version = "0.7", default-features = false }
 variant_count = { version = "1.1.0", default-features = false }
 
@@ -40,6 +49,14 @@ esp-hal = { version = "1.1", features = ["unstable"] }
 esp-backtrace = { version = "0.19", features = ["panic-handler", "println"] }
 esp-println = { version = "0.17", features = ["log-04"] }
 esp-alloc = "0.10"
+esp-rtos = { version = "0.3", features = ["embassy", "log-04", "esp-radio", "esp-alloc"] }
+esp-storage = "0.9"
+esp-bootloader-esp-idf = "0.5"
+embedded-storage = "0.3"
+esp-radio = { version = "0.18", features = ["wifi"] }
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-net = { version = "0.9", features = ["tcp", "udp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
 
 micromath = "2.0"
 critical-section = "1"
@@ -49,7 +66,8 @@ log = "0.4"
 [profile.release]
 debug = true
 lto = "off"
-opt-level = "s"
+# esp-radio requires opt-level 2 or 3.
+opt-level = 3
 
 [profile.dev]
 lto = "off"
