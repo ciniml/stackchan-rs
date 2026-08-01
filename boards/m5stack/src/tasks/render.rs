@@ -40,6 +40,14 @@ pub async fn render(display: &'static mut DisplayTy) {
         let context = avatar.context();
         context.expression = STATE.expression();
         context.mouth_open_ratio = STATE.mouth_open_pct() as f32 / 100.0;
+        match STATE.gaze() {
+            Some((h, v)) => {
+                context.gaze_override = true;
+                context.gaze_horizontal = h;
+                context.gaze_vertical = v;
+            }
+            None => context.gaze_override = false,
+        }
         avatar.run(display, &timer).unwrap();
         ticker.next().await;
     }

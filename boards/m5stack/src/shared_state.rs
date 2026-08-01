@@ -3,7 +3,7 @@
 //! and consumer tasks (render, servo) read. There is no central queue — commands are
 //! posted by storing into fields, consumed by the owning task on its own tick.
 
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI8, AtomicU8, AtomicU32, Ordering};
 
 use m5stack_avatar_rs::Expression;
 
@@ -30,6 +30,12 @@ pub struct SharedState {
     sound_cmd: AtomicU8,
     /// Speaker volume, 0..=100. Seeded from the persisted config at boot.
     volume: AtomicU8,
+    /// External gaze override active (touch tracking). While set, the render task feeds
+    /// `gaze_*` into the avatar and the saccade animator is suppressed.
+    gaze_active: AtomicU8,
+    /// Gaze override, -100..=100 mapped to the avatar's -1.0..=1.0 range.
+    gaze_h: AtomicI8,
+    gaze_v: AtomicI8,
 }
 
 /// Sounds the audio task can play.
@@ -75,6 +81,9 @@ impl SharedState {
             mouth_open_pct: AtomicU8::new(0),
             sound_cmd: AtomicU8::new(0),
             volume: AtomicU8::new(80),
+            gaze_active: AtomicU8::new(0),
+            gaze_h: AtomicI8::new(0),
+            gaze_v: AtomicI8::new(0),
         }
     }
 
@@ -150,5 +159,29 @@ impl SharedState {
 
     pub fn volume(&self) -> u8 {
         self.volume.load(Ordering::Relaxed)
+    }
+
+    /// Set or clear the external gaze override. `h`/`v` are -1.0..=1.0.
+    pub fn set_gaze(&self, gaze: Option<(f32, f32)>) {
+        match gaze {
+            Some((h, v)) => {
+                self.gaze_h
+                    .store((h.clamp(-1.0, 1.0) * 100.0) as i8, Ordering::Relaxed);
+                self.gaze_v
+                    .store((v.clamp(-1.0, 1.0) * 100.0) as i8, Ordering::Relaxed);
+                self.gaze_active.store(1, Ordering::Release);
+            }
+            None => self.gaze_active.store(0, Ordering::Release),
+        }
+    }
+
+    pub fn gaze(&self) -> Option<(f32, f32)> {
+        if self.gaze_active.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        Some((
+            self.gaze_h.load(Ordering::Relaxed) as f32 / 100.0,
+            self.gaze_v.load(Ordering::Relaxed) as f32 / 100.0,
+        ))
     }
 }

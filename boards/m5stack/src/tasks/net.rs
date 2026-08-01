@@ -11,10 +11,14 @@
 //! - `POST /api/expression/<name>`  → set expression (neutral/happy/angry/sad/doubt/sleepy)
 //! - `POST /api/head/<pan>/<tilt>`  → move head, degrees (e.g. `/api/head/120/85`)
 //! - `POST /api/sound/<name>`       → play a sound (arpeggio/blip)
-//! - `POST /api/volume/<0-100>`     → set + persist speaker volume
-//! - `POST /api/wifi/<ssid>/<pass>` → persist Wi-Fi credentials (takes effect on reboot;
-//!   no URL-decoding — avoid `/`, `%`, spaces in credentials for now)
-//! - `POST /api/reboot`             → software reset
+//! - `POST /api/volume/<0-100>`     → set speaker volume (persisted on reboot)
+//! - `POST /api/wifi/<ssid>/<pass>` → set Wi-Fi credentials (persisted + applied on
+//!   reboot; no URL-decoding — avoid `/`, `%`, spaces in credentials for now)
+//! - `POST /api/reboot`             → persist changed settings, then software reset
+//!
+//! Settings are deliberately written to flash only in the reboot path: a flash write
+//! while the Wi-Fi driver is active (cache disabled mid-write) reliably took the whole
+//! device down, and just before a reset that hazard does not matter.
 
 use core::fmt::Write as FmtWrite;
 
@@ -143,6 +147,7 @@ pub async fn net(
 }
 
 async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config) -> ! {
+    let loaded_config = config.clone();
     let mut rx_buffer = [0u8; 1024];
     let mut tx_buffer = [0u8; 1024];
     let mut req = [0u8; 1024];
@@ -182,7 +187,7 @@ async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config
             let mut parts = line.split(' ');
             let method = parts.next().unwrap_or("");
             let path = parts.next().unwrap_or("");
-            let (status, body, reboot) = handle_request(method, path, &mut store, &mut config);
+            let (status, body, reboot) = handle_request(method, path, &mut config);
             let mut resp: heapless::String<512> = heapless::String::new();
             let _ = write!(
                 resp,
@@ -196,6 +201,13 @@ async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config
                 let _ = socket.flush().await;
                 socket.close();
                 Timer::after(Duration::from_millis(200)).await;
+                // Persist pending changes now — the flash write may take the Wi-Fi
+                // stack down, but we are resetting immediately anyway.
+                if config != loaded_config
+                    && let Err(e) = store.save(&config)
+                {
+                    warn!("config save failed: {:?}", e);
+                }
                 info!("rebooting (API request)");
                 esp_hal::system::software_reset();
             }
@@ -215,10 +227,9 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 fn handle_request(
     method: &str,
     path: &str,
-    store: &mut ConfigStore,
     config: &mut Config,
 ) -> (&'static str, heapless::String<256>, bool) {
-    let (status, body) = route(method, path, store, config);
+    let (status, body) = route(method, path, config);
     let reboot = method == "POST" && path == "/api/reboot" && status.starts_with("200");
     (status, body, reboot)
 }
@@ -226,7 +237,6 @@ fn handle_request(
 fn route(
     method: &str,
     path: &str,
-    store: &mut ConfigStore,
     config: &mut Config,
 ) -> (&'static str, heapless::String<256>) {
     let mut body: heapless::String<256> = heapless::String::new();
@@ -254,9 +264,6 @@ fn route(
                 Some(v) if v <= 100 => {
                     STATE.set_volume(v);
                     config.volume = v;
-                    if let Err(e) = store.save(config) {
-                        warn!("config save failed: {:?}", e);
-                    }
                     let _ = write!(body, "{{\"volume\":{}}}", v);
                     ("200 OK", body)
                 }
@@ -279,17 +286,8 @@ fn route(
             let _ = config.wifi_ssid.push_str(ssid);
             config.wifi_pass.clear();
             let _ = config.wifi_pass.push_str(pass);
-            match store.save(config) {
-                Ok(()) => {
-                    let _ = write!(body, "{{\"ssid\":\"{}\",\"note\":\"reboot to apply\"}}", ssid);
-                    ("200 OK", body)
-                }
-                Err(e) => {
-                    warn!("config save failed: {:?}", e);
-                    let _ = write!(body, "{{\"error\":\"flash write failed\"}}");
-                    ("500 Internal Server Error", body)
-                }
-            }
+            let _ = write!(body, "{{\"ssid\":\"{}\",\"note\":\"reboot to apply\"}}", ssid);
+            ("200 OK", body)
         }
         ("POST", _) if path.starts_with("/api/expression/") => {
             let name = &path["/api/expression/".len()..];

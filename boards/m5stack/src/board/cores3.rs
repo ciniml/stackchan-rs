@@ -229,25 +229,30 @@ pub struct Board {
 /// the servo controllers share the UART through a `RefCell`, which must not cross cores.
 pub fn make_head(parts: HeadParts) -> ScsHead {
     let uart: &'static UartCell = UART.init(RefCell::new(parts.uart));
-    // Short response timeout for runtime commands: this servo does not acknowledge
-    // write commands (SCS response level 0), so every set_target_* would otherwise
-    // block for the full timeout — 200 ms per write was the cause of ratchety motion.
-    // The command itself is already on the wire; only the (absent) reply is waited for.
-    let scs_timeout = CoreDuration::from_millis(2);
-    let pan: &'static mut ScsServoTy = PAN.init(Scs0009ServoControl::<_, _, ScsClock>::new(
-        PAN_ID,
-        UartRxRef(uart),
-        UartTxRef(uart),
-        ProtocolMasterConfig { echo_back: false },
-        scs_timeout,
-    ));
-    let tilt: &'static mut ScsServoTy = TILT.init(Scs0009ServoControl::<_, _, ScsClock>::new(
-        TILT_ID,
-        UartRxRef(uart),
-        UartTxRef(uart),
-        ProtocolMasterConfig { echo_back: false },
-        scs_timeout,
-    ));
+    // These servos run with SCS response level 0 (reply only to READ/PING), so runtime
+    // write commands must not wait for an acknowledgement — with a waiting write, every
+    // set_target_* blocked for the full response timeout (ratchety motion).
+    let scs_timeout = CoreDuration::from_millis(200);
+    let pan: &'static mut ScsServoTy = PAN.init(
+        Scs0009ServoControl::<_, _, ScsClock>::new(
+            PAN_ID,
+            UartRxRef(uart),
+            UartTxRef(uart),
+            ProtocolMasterConfig { echo_back: false },
+            scs_timeout,
+        )
+        .with_wait_write_response(false),
+    );
+    let tilt: &'static mut ScsServoTy = TILT.init(
+        Scs0009ServoControl::<_, _, ScsClock>::new(
+            TILT_ID,
+            UartRxRef(uart),
+            UartTxRef(uart),
+            ProtocolMasterConfig { echo_back: false },
+            scs_timeout,
+        )
+        .with_wait_write_response(false),
+    );
     ScsHead {
         pan,
         tilt,
@@ -438,15 +443,24 @@ fn init_servo_bus(
     let uart_cell = RefCell::new(uart);
     let probe = |id: u8| -> bool {
         use alloc::boxed::Box;
-        let mut servo = Box::new(Scs0009ServoControl::<_, _, ScsClock>::new(
-            id,
-            UartRxRef(&uart_cell),
-            UartTxRef(&uart_cell),
-            ProtocolMasterConfig { echo_back: false },
-            CoreDuration::from_millis(200),
-        ));
-        match servo.output_enable() {
-            Ok(()) => true,
+        // Presence is probed with a READ (answered at any SCS response level; a write
+        // acknowledgement never comes at response level 0). Torque-on is then sent as a
+        // fire-and-forget write.
+        let mut servo = Box::new(
+            Scs0009ServoControl::<_, _, ScsClock>::new(
+                id,
+                UartRxRef(&uart_cell),
+                UartTxRef(&uart_cell),
+                ProtocolMasterConfig { echo_back: false },
+                CoreDuration::from_millis(200),
+            )
+            .with_wait_write_response(false),
+        );
+        match servo.position_lower_limit() {
+            Ok(_) => {
+                let _ = servo.output_enable();
+                true
+            }
             Err(e) => {
                 warn!("servo id={} not responding ({:?}); disabling", id, e);
                 false

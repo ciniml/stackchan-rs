@@ -2,8 +2,10 @@
 //! avatar/head commands, mirroring the C++ firmware's demo-loop input handling:
 //!
 //! - Touch **down** (edge): cycle the avatar expression.
-//! - While **touching**: the head follows the touch point — screen X maps to pan, screen
-//!   Y to tilt — and idle behaviour is suppressed for a hold-off period.
+//! - While **touching**: the eyes and head follow the touch point — the gaze tracks the
+//!   finger directly, screen X maps to pan and screen Y to tilt — and idle behaviour is
+//!   suppressed for a hold-off period. On release the gaze returns to the saccade
+//!   animator.
 
 use embassy_time::{Duration, Instant, Ticker};
 use log::{debug, warn};
@@ -61,6 +63,13 @@ pub async fn input(mut touch: TouchTy, limits: HeadLimits) {
                 let now_ms = Instant::now().as_millis() as u32;
                 STATE.note_interaction(now_ms, INTERACT_HOLD_MS);
 
+                // Eyes track the finger while touching.
+                let gx = (p.x as f32 / (SCREEN_W - 1) as f32) * 2.0 - 1.0;
+                let gy = ((p.y as f32).min((SCREEN_H - 1) as f32) / (SCREEN_H - 1) as f32)
+                    * 2.0
+                    - 1.0;
+                STATE.set_gaze(Some((gx, gy)));
+
                 if !was_touching {
                     STATE.cycle_expression();
                     STATE.post_sound(Sound::Blip);
@@ -79,6 +88,9 @@ pub async fn input(mut touch: TouchTy, limits: HeadLimits) {
                 was_touching = true;
             }
             None => {
+                if was_touching {
+                    STATE.set_gaze(None);
+                }
                 was_touching = false;
                 last_posted = None;
             }
