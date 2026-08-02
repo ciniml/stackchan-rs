@@ -41,7 +41,7 @@ variant_count = { version = "1.1.0", default-features = false }
 stackchan-rs = { path = "../.." }
 m5stack-avatar-rs = { path = "../../m5stack-avatar-rs" }
 m5drivers-rs = { path = "../../m5drivers-rs" }
-scs-servo = { path = "../../../scs-servo-rs/scs-servo" }
+scs-servo = { path = "../../scs-servo-rs/scs-servo" }
 nb = "1"
 static_cell = "2"
 

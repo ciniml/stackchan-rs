@@ -4,3 +4,6 @@
 [submodule "m5drivers-rs"]
 	path = m5drivers-rs
 	url = https://github.com/ciniml/m5drivers-rs.git
+[submodule "scs-servo-rs"]
+	path = scs-servo-rs
+	url = https://github.com/ciniml/scs-servo-rs.git
