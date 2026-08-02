@@ -10,11 +10,8 @@
 use core::cell::RefCell;
 use core::time::Duration as CoreDuration;
 
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::RgbColor;
 use embedded_hal::delay::DelayNs;
 use embedded_hal_bus::i2c::RefCellDevice as I2cRefCellDevice;
-use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::{Async, Blocking};
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
@@ -23,8 +20,9 @@ use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::i2s::master::{Channels, Config as I2sConfig, DataFormat, I2s, I2sTx};
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::rng::Rng;
+use esp_hal::dma::{DmaRxBuf, DmaTxBuf};
 use esp_hal::spi::Mode as SpiMode;
-use esp_hal::spi::master::{Config as SpiConfig, Spi};
+use esp_hal::spi::master::{Config as SpiConfig, Spi, SpiDmaBus};
 use esp_hal::time::{Instant, Rate};
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::{Config as UartConfig, Uart};
@@ -32,7 +30,7 @@ use log::{info, warn};
 use m5drivers_rs::aw9523::Aw9523Reg;
 use m5drivers_rs::{
     AW9523_DEFAULT_ADDR, AW88298_DEFAULT_ADDR, AXP2101_DEFAULT_ADDR, Aw88298, Aw9523, Aw9523Pin,
-    Axp2101, FT6336_DEFAULT_ADDR, Ft6336, Ili9342, PY32_DEFAULT_ADDR, Pin, Py32IoExpander,
+    Axp2101, FT6336_DEFAULT_ADDR, Ft6336, Ili9342Dma, PY32_DEFAULT_ADDR, Pin, Py32IoExpander,
 };
 use scs_servo::device::ServoControl;
 use scs_servo::device::scs0009::Scs0009ServoControl;
@@ -120,10 +118,30 @@ type I2cBusCell = RefCell<I2cBusTy>;
 type I2cDeviceTy = I2cRefCellDevice<'static, I2cBusTy>;
 type Aw9523Cell = RefCell<Aw9523<I2cDeviceTy>>;
 type Axp2101Ty = Axp2101<I2cDeviceTy>;
-type SpiBusTy = Spi<'static, Blocking>;
-type SpiDeviceTy = ExclusiveDevice<SpiBusTy, Output<'static>, Delay>;
 type LcdRstTy = Aw9523Pin<'static, I2cDeviceTy>;
-pub type DisplayTy = Ili9342<SpiDeviceTy, Output<'static>, LcdRstTy>;
+type LcdDriverTy = Ili9342Dma<SpiDmaBus<'static, Async>, Output<'static>, Output<'static>, LcdRstTy>;
+
+/// Newtype implementing the avatar's [`m5stack_avatar_rs::stackchan::AsyncDisplay`] for
+/// the DMA LCD driver (orphan-rule workaround).
+pub struct DisplayTy(LcdDriverTy);
+
+impl m5stack_avatar_rs::stackchan::AsyncDisplay for DisplayTy {
+    type Error = m5drivers_rs::Ili9342DmaError;
+
+    fn dimensions(&self) -> (i32, i32) {
+        (320, 240)
+    }
+
+    async fn fill_rect(&mut self, x: i32, y: i32, w: u32, h: u32, color: u16)
+    -> Result<(), Self::Error> {
+        self.0.fill_rect(x as u16, y as u16, w as u16, h as u16, color).await
+    }
+
+    async fn blit(&mut self, x: i32, y: i32, w: u32, h: u32, pixels: &[u8])
+    -> Result<(), Self::Error> {
+        self.0.blit(x as u16, y as u16, w as u16, h as u16, pixels).await
+    }
+}
 pub type HeadTy = ScsHead;
 pub type TouchTy = Ft6336<I2cDeviceTy>;
 pub type SpeakerTy = I2sTx<'static, Async>;
@@ -315,6 +333,7 @@ fn init_power(i2c_bus: &'static I2cBusCell) -> &'static Aw9523Cell {
 #[inline(never)]
 fn init_display(
     spi2: esp_hal::peripherals::SPI2<'static>,
+    dma: esp_hal::peripherals::DMA_CH1<'static>,
     sck: esp_hal::peripherals::GPIO36<'static>,
     mosi: esp_hal::peripherals::GPIO37<'static>,
     cs: esp_hal::peripherals::GPIO3<'static>,
@@ -322,6 +341,11 @@ fn init_display(
     aw: &'static Aw9523Cell,
     delay: &mut Delay,
 ) -> &'static mut DisplayTy {
+    // SPI with DMA: init the panel in blocking mode, then upgrade the bus to async so
+    // frame transfers run on DMA while the executor keeps scheduling other tasks.
+    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = esp_hal::dma_buffers!(64, 16384);
+    let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
+    let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
     let spi_bus = Spi::new(
         spi2,
         SpiConfig::default()
@@ -330,18 +354,19 @@ fn init_display(
     )
     .unwrap()
     .with_sck(sck)
-    .with_mosi(mosi);
-    let cs = Output::new(cs, Level::High, OutputConfig::default());
-    let spi_dev = ExclusiveDevice::new(spi_bus, cs, Delay::new()).unwrap();
+    .with_mosi(mosi)
+    .with_dma(dma)
+    .with_buffers(dma_rx_buf, dma_tx_buf);
 
+    let cs = Output::new(cs, Level::High, OutputConfig::default());
     let dc = Output::new(dc, Level::Low, OutputConfig::default());
     let rst = Aw9523Pin::new(aw, Pin::p1(5));
 
-    let display: &'static mut DisplayTy = DISPLAY.init(Ili9342::new(spi_dev, dc, rst));
-    display.init(delay).unwrap();
-    display.fill(0, 0, 320, 240, Rgb565::BLACK).unwrap();
-    info!("ILI9342 ready");
-    display
+    let mut lcd = Ili9342Dma::new(spi_bus, dc, cs, rst);
+    lcd.init(delay).unwrap();
+    lcd.fill_blocking(0, 0, 320, 240, 0x0000).unwrap();
+    info!("ILI9342 ready (DMA)");
+    DISPLAY.init(DisplayTy(lcd.map_bus(|b| b.into_async())))
 }
 
 #[inline(never)]
@@ -487,7 +512,7 @@ fn init_servo_bus(
 
 pub fn init() -> Board {
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
-    esp_alloc::heap_allocator!(size: 160 * 1024);
+    esp_alloc::heap_allocator!(size: 200 * 1024);
     esp_println::logger::init_logger(log::LevelFilter::Info);
     let mut delay = Delay::new();
 
@@ -504,6 +529,7 @@ pub fn init() -> Board {
     let aw = init_power(i2c_bus);
     let display = init_display(
         peripherals.SPI2,
+        peripherals.DMA_CH1,
         peripherals.GPIO36,
         peripherals.GPIO37,
         peripherals.GPIO3,

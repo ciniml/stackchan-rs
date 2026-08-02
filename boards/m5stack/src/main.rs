@@ -89,6 +89,10 @@ fn main() -> ! {
 
     let executor = MAIN_EXECUTOR.init(esp_rtos::embassy::Executor::new());
     executor.run(move |spawner| {
+        // Spawned first: the render task's first poll allocates the avatar frame arena
+        // in one piece before the Wi-Fi stack fragments the heap.
+        spawner.spawn(tasks::render::render(board.display).unwrap());
+
         if board.head_present {
             spawner.spawn(tasks::idle::idle(board.rng, board.limits).unwrap());
         }
@@ -107,7 +111,5 @@ fn main() -> ! {
         spawner.spawn(
             tasks::net::net(spawner, board.wifi, board.rng, config_store, saved_config).unwrap(),
         );
-
-        spawner.spawn(tasks::render::render(board.display).unwrap());
     })
 }

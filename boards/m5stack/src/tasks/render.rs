@@ -45,6 +45,14 @@ pub async fn render(display: &'static mut DisplayTy) {
                 avatar.set_balloon_text(&text, 0);
             }
         }
+        // CoreS3: async DMA display — the executor keeps running other tasks during
+        // panel transfers. Core2: blocking SPI (kept until it gets the DMA treatment).
+        #[cfg(feature = "cores3")]
+        avatar
+            .tick_async(Instant::now().as_millis() as u32, display)
+            .await
+            .unwrap();
+        #[cfg(feature = "core2")]
         avatar
             .tick(Instant::now().as_millis() as u32, display)
             .unwrap();

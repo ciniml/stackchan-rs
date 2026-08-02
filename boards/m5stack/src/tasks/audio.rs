@@ -27,7 +27,7 @@ const AMPLITUDE: f32 = 0.35;
 const POLL_MS: u64 = 50;
 /// Longest supported note. Bounds the synth buffer (96 bytes/ms at 24 kHz stereo 16-bit)
 /// and must stay within the DMA descriptor budget (32 KiB) of the board bring-up.
-const MAX_NOTE_MS: u32 = 300;
+const MAX_NOTE_MS: u32 = 200;
 
 struct Note {
     freq_hz: f32,
