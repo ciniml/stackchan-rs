@@ -33,7 +33,7 @@ extern crate alloc;
 use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal::system::Stack;
-use log::info;
+use log::{info, warn};
 use static_cell::StaticCell;
 
 #[cfg(all(feature = "core2", feature = "cores3"))]
@@ -65,6 +65,14 @@ fn main() -> ! {
     let mut config_store = config::ConfigStore::new(board.flash);
     let saved_config = config_store.load();
     shared_state::STATE.set_volume(saved_config.volume);
+    // Restore the persisted face, if any (validated so a stale/corrupt record can't
+    // wedge the renderer every boot; the render task picks it up on its first frame).
+    if let Some(face) = config_store.load_face() {
+        match m5stack_avatar_rs::stackchan::vm::decode(&face) {
+            Ok(_) => shared_state::STATE.post_face(&face),
+            Err(e) => warn!("persisted face rejected: {:?}; using default", e),
+        }
+    }
 
     // Real-time work goes to core 1: build the head driver there (its UART sharing must
     // not cross cores) and run the servo task on a dedicated executor.

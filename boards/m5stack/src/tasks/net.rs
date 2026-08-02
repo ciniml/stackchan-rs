@@ -15,7 +15,8 @@
 //! - `POST /api/wifi/<ssid>/<pass>` → set Wi-Fi credentials (persisted + applied on
 //!   reboot; no URL-decoding — avoid `/`, `%`, spaces in credentials for now)
 //! - `POST /api/face`               → hot-swap the face bytecode (binary `AVDS` v1 body,
-//!   e.g. `curl --data-binary @face.avbc`); `POST /api/face/reset` restores the default
+//!   e.g. `curl --data-binary @face.avbc`; persisted on reboot, max 8 KiB);
+//!   `POST /api/face/reset` restores the default (also persisted on reboot)
 //! - `POST /api/balloon/<text>`     → show balloon text (UTF-8, Japanese OK;
 //!   percent-encoded, `_` also renders as space); `POST /api/balloon/clear` clears it
 //! - `POST /api/reboot`             → persist changed settings, then software reset
@@ -152,6 +153,9 @@ pub async fn net(
 
 async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config) -> ! {
     let loaded_config = config.clone();
+    // Face bytecode awaiting persistence (Some(empty) = clear). Like the config, it is
+    // written to flash only on the way into a reboot (see module docs).
+    let mut pending_face: Option<alloc::vec::Vec<u8>> = None;
     let mut rx_buffer = [0u8; 2048];
     let mut tx_buffer = [0u8; 1024];
     // Large enough for the request head plus a face-bytecode upload body (~2-4 KiB).
@@ -230,7 +234,8 @@ async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config
                 &[]
             };
 
-            let (status, body, reboot) = handle_request(method, path, request_body, &mut config);
+            let (status, body, reboot) =
+                handle_request(method, path, request_body, &mut config, &mut pending_face);
             let mut resp: heapless::String<1024> = heapless::String::new();
             let _ = write!(
                 resp,
@@ -250,6 +255,11 @@ async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config
                     && let Err(e) = store.save(&config)
                 {
                     warn!("config save failed: {:?}", e);
+                }
+                if let Some(face) = pending_face.take()
+                    && let Err(e) = store.save_face(&face)
+                {
+                    warn!("face save failed: {:?}", e);
                 }
                 info!("rebooting (API request)");
                 esp_hal::system::software_reset();
@@ -307,8 +317,9 @@ fn handle_request(
     path: &str,
     request_body: &[u8],
     config: &mut Config,
+    pending_face: &mut Option<alloc::vec::Vec<u8>>,
 ) -> (&'static str, heapless::String<512>, bool) {
-    let (status, body) = route(method, path, request_body, config);
+    let (status, body) = route(method, path, request_body, config, pending_face);
     let reboot = method == "POST" && path == "/api/reboot" && status.starts_with("200");
     (status, body, reboot)
 }
@@ -318,6 +329,7 @@ fn route(
     path: &str,
     request_body: &[u8],
     config: &mut Config,
+    pending_face: &mut Option<alloc::vec::Vec<u8>>,
 ) -> (&'static str, heapless::String<512>) {
     let mut body: heapless::String<512> = heapless::String::new();
     match (method, path) {
@@ -406,16 +418,26 @@ fn route(
         }
         ("POST", "/api/face/reset") => {
             STATE.post_face(&[]);
+            *pending_face = Some(alloc::vec::Vec::new());
             let _ = write!(body, "{{\"face\":\"default\"}}");
             ("200 OK", body)
         }
         ("POST", "/api/face") => {
             // Body must be an `AVDS` v1 bytecode file from tools/avatar_dsl.
             match m5stack_avatar_rs::stackchan::vm::decode(request_body) {
-                Ok(_) => {
+                Ok(_) if request_body.len() <= crate::config::FACE_MAX_LEN => {
                     STATE.post_face(request_body);
+                    *pending_face = Some(request_body.to_vec());
                     let _ = write!(body, "{{\"face\":\"loaded\",\"bytes\":{}}}", request_body.len());
                     ("200 OK", body)
+                }
+                Ok(_) => {
+                    let _ = write!(
+                        body,
+                        "{{\"error\":\"too large (max {} bytes)\"}}",
+                        crate::config::FACE_MAX_LEN
+                    );
+                    ("400 Bad Request", body)
                 }
                 Err(e) => {
                     let _ = write!(body, "{{\"error\":\"bad bytecode: {:?}\"}}", e);

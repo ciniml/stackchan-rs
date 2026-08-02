@@ -114,7 +114,7 @@ POST /api/sound/<arpeggio|blip>
 POST /api/volume/<0-100>            (再起動時に永続化)
 POST /api/wifi/<ssid>/<pass>        (再起動時に永続化・適用)
 POST /api/balloon/<text>            UTF-8(日本語可、%エンコード、_→スペース)/ balloon/clear
-POST /api/face                      AVDS v1 バイナリボディ / face/reset
+POST /api/face                      AVDS v1 バイナリボディ(再起動時に永続化、最大8KB)/ face/reset
 POST /api/reboot                    設定保存 + リセット
 ```
 
@@ -136,7 +136,7 @@ Wi-Fi 初回設定: `WIFI_SSID=... WIFI_PASS=...` でビルドするか、接続
 
 ## 残タスク
 
-- [ ] 顔バイトコードの永続化(C++ storage.cpp 相当。設定フラッシュ保存に載せれば可)
+- [x] 顔バイトコードの永続化(nvs 領域 0xA000 に独自レコード、最大8KB。保存は reboot 経路のみ)
 - [x] バルーンの日本語フォント(u8g2-fonts の b16/b12 japanese3 = JIS第1+2水準。u8g2 に 24px カットが無いため大パネルは 16px)
 - [ ] Core2 実機での動作確認(ビルドは通っている。描画はブロッキング経路のまま)
 - [ ] チルトサーボ(id=2)接続時の2軸動作確認
