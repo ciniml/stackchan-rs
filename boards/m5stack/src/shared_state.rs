@@ -12,6 +12,9 @@ use m5stack_avatar_rs::Expression;
 
 pub static STATE: SharedState = SharedState::new();
 
+/// Balloon text capacity in bytes (UTF-8: roughly 80 Japanese characters).
+pub const BALLOON_CAP: usize = 256;
+
 pub struct SharedState {
     /// Head pose target, 1/1024-degree units (see [`crate::head`]).
     pan_target: AtomicU32,
@@ -41,7 +44,7 @@ pub struct SharedState {
     gaze_v: AtomicI8,
     /// Balloon text mailbox (empty string = no balloon). `balloon_version` bumps on
     /// every post so the render task can detect changes without holding the lock.
-    balloon: CsMutex<RefCell<heapless::String<96>>>,
+    balloon: CsMutex<RefCell<heapless::String<BALLOON_CAP>>>,
     balloon_version: AtomicU32,
     /// Face bytecode mailbox (`AVDS` v1; empty = reset to the embedded default face).
     face: CsMutex<RefCell<alloc::vec::Vec<u8>>>,
@@ -200,7 +203,7 @@ impl SharedState {
     }
 
     /// Returns the balloon text if it changed since `*seen` (empty = clear balloon).
-    pub fn take_balloon(&self, seen: &mut u32) -> Option<heapless::String<96>> {
+    pub fn take_balloon(&self, seen: &mut u32) -> Option<heapless::String<BALLOON_CAP>> {
         let version = self.balloon_version.load(Ordering::Acquire);
         if version == *seen {
             return None;

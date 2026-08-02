@@ -16,8 +16,8 @@
 //!   reboot; no URL-decoding — avoid `/`, `%`, spaces in credentials for now)
 //! - `POST /api/face`               → hot-swap the face bytecode (binary `AVDS` v1 body,
 //!   e.g. `curl --data-binary @face.avbc`); `POST /api/face/reset` restores the default
-//! - `POST /api/balloon/<text>`     → show balloon text (ASCII; `_` renders as space);
-//!   `POST /api/balloon/clear` clears it
+//! - `POST /api/balloon/<text>`     → show balloon text (UTF-8, Japanese OK;
+//!   percent-encoded, `_` also renders as space); `POST /api/balloon/clear` clears it
 //! - `POST /api/reboot`             → persist changed settings, then software reset
 //!
 //! Settings are deliberately written to flash only in the reboot path: a flash write
@@ -41,7 +41,7 @@ use static_cell::StaticCell;
 
 use crate::config::{Config, ConfigStore};
 use crate::head::DEG;
-use crate::shared_state::{STATE, Sound};
+use crate::shared_state::{BALLOON_CAP, STATE, Sound};
 
 const WIFI_SSID: Option<&str> = option_env!("WIFI_SSID");
 const WIFI_PASS: Option<&str> = option_env!("WIFI_PASS");
@@ -192,7 +192,9 @@ async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config
             let mut parts = line.split(' ');
             let method: heapless::String<8> =
                 heapless::String::try_from(parts.next().unwrap_or("")).ok()?;
-            let path: heapless::String<128> =
+            // Percent-encoded Japanese balloon text runs 9 bytes per character, so the
+            // path buffer is sized for BALLOON_CAP (256) fully-encoded + the prefix.
+            let path: heapless::String<1024> =
                 heapless::String::try_from(parts.next().unwrap_or("")).ok()?;
             let content_length: usize = head
                 .lines()
@@ -229,7 +231,7 @@ async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config
             };
 
             let (status, body, reboot) = handle_request(method, path, request_body, &mut config);
-            let mut resp: heapless::String<512> = heapless::String::new();
+            let mut resp: heapless::String<1024> = heapless::String::new();
             let _ = write!(
                 resp,
                 "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -260,6 +262,41 @@ async fn serve(stack: Stack<'static>, mut store: ConfigStore, mut config: Config
     }
 }
 
+/// Decode a percent-encoded URL path segment into UTF-8 text (`_` → space, kept from
+/// the ASCII-only days so existing scripts still work). Returns `None` on a malformed
+/// `%` escape or invalid UTF-8; input beyond [`BALLOON_CAP`] bytes is truncated at a
+/// character boundary.
+fn percent_decode_text(raw: &str) -> Option<heapless::String<BALLOON_CAP>> {
+    let mut bytes: heapless::Vec<u8, BALLOON_CAP> = heapless::Vec::new();
+    let mut it = raw.bytes();
+    while let Some(b) = it.next() {
+        let decoded = match b {
+            b'%' => {
+                let hi = (it.next()? as char).to_digit(16)?;
+                let lo = (it.next()? as char).to_digit(16)?;
+                (hi * 16 + lo) as u8
+            }
+            b'_' => b' ',
+            b'+' => b' ',
+            _ => b,
+        };
+        if bytes.push(decoded).is_err() {
+            break;
+        }
+    }
+    // Truncate a UTF-8 sequence cut off by the capacity limit.
+    let text = loop {
+        match core::str::from_utf8(&bytes) {
+            Ok(s) => break s,
+            Err(e) if e.error_len().is_none() && !bytes.is_empty() => {
+                bytes.truncate(e.valid_up_to());
+            }
+            Err(_) => return None,
+        }
+    };
+    Some(heapless::String::try_from(text).ok()?)
+}
+
 fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
@@ -270,7 +307,7 @@ fn handle_request(
     path: &str,
     request_body: &[u8],
     config: &mut Config,
-) -> (&'static str, heapless::String<256>, bool) {
+) -> (&'static str, heapless::String<512>, bool) {
     let (status, body) = route(method, path, request_body, config);
     let reboot = method == "POST" && path == "/api/reboot" && status.starts_with("200");
     (status, body, reboot)
@@ -281,8 +318,8 @@ fn route(
     path: &str,
     request_body: &[u8],
     config: &mut Config,
-) -> (&'static str, heapless::String<256>) {
-    let mut body: heapless::String<256> = heapless::String::new();
+) -> (&'static str, heapless::String<512>) {
+    let mut body: heapless::String<512> = heapless::String::new();
     match (method, path) {
         ("GET", "/api/status") => {
             let (pan, tilt, _) = STATE.head_target();
@@ -393,13 +430,17 @@ fn route(
         }
         ("POST", _) if path.starts_with("/api/balloon/") => {
             let raw = &path["/api/balloon/".len()..];
-            let mut text: heapless::String<96> = heapless::String::new();
-            for c in raw.chars().take(96) {
-                let _ = text.push(if c == '_' { ' ' } else { c });
+            match percent_decode_text(raw) {
+                Some(text) => {
+                    STATE.post_balloon(&text);
+                    let _ = write!(body, "{{\"balloon\":\"{}\"}}", text);
+                    ("200 OK", body)
+                }
+                None => {
+                    let _ = write!(body, "{{\"error\":\"bad percent-encoding or utf-8\"}}");
+                    ("400 Bad Request", body)
+                }
             }
-            STATE.post_balloon(&text);
-            let _ = write!(body, "{{\"balloon\":\"{}\"}}", text);
-            ("200 OK", body)
         }
         ("POST", "/api/sound/arpeggio") => {
             STATE.post_sound(Sound::Arpeggio);
