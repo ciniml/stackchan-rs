@@ -1,3 +1,6 @@
 [submodule "m5stack-avatar-rs"]
 	path = m5stack-avatar-rs
 	url = https://github.com/ciniml/m5stack-avatar-rs.git
+[submodule "m5drivers-rs"]
+	path = m5drivers-rs
+	url = https://github.com/ciniml/m5drivers-rs.git
