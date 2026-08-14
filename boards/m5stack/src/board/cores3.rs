@@ -512,7 +512,13 @@ fn init_servo_bus(
 
 pub fn init() -> Board {
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
-    esp_alloc::heap_allocator!(size: 200 * 1024);
+    // NOTE: the core-0 main stack is whatever DRAM remains after statics + this heap
+    // (linker-assigned), and every embassy task on core 0 polls on that one stack —
+    // including esp-radio init/driver calls. 200 KiB of heap left only ~6.5 KiB of
+    // stack once the captive-portal tasks were added, which Wi-Fi bring-up overflows
+    // ("write to the stack guard on ProCpu" / esp-rtos stack-range panics); even
+    // ~15 KiB was borderline. Keep the remaining stack ≳ 24 KiB when tuning this.
+    esp_alloc::heap_allocator!(size: 176 * 1024);
     esp_println::logger::init_logger(log::LevelFilter::Info);
     let mut delay = Delay::new();
 

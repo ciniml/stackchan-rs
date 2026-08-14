@@ -1,6 +1,6 @@
 # 作業記録: boards/m5stack — Rust版ｽﾀｯｸﾁｬﾝファームウェア
 
-期間: 2026-07-30 〜 2026-08-02
+期間: 2026-07-30 〜 2026-08-03
 対象: `boards/m5stack`(CoreS3 / Core2)、`m5stack-avatar-rs`、`m5drivers-rs`、`scs-servo-rs`
 参考実装: C++版 `~/repos/stackchan-idf`
 
@@ -96,6 +96,12 @@
 - 原因1: エフェクトグループ(x≥236)が右目・右眉グループと重なり、後からのクリアで右端が毎フレーム消えていた → DSL で **effect() を最初に描画**(stackchan-idf 側の asset にも同修正)
 - 原因2: 重なりグループ間の転送タイムラグ → **転送前マージ**(後のグループのピクセルを先のグループのバッファへコピー、全画素が最初の転送で最終内容になる)で構造的に解消
 
+### 13. セットアップ AP + キャプティブポータル (08-03)
+- 認証情報が無いとき WPA2 AP(`Stackchan-XXXXXX` / `sc-xxxxxxxx`、C++版と同じ MAC 由来)+ 192.168.4.1 で起動
+- 最小 DHCP サーバ(MAC 由来の決定的リース)+ 全応答 DNS + API 以外 302 リダイレクトでスマホのログインシートを自動表示
+- `GET /` の設定フォーム(STA モードでも可)→ 保存 → 再起動で STA 接続。`/api/wifi/clear` で AP モードに戻せる
+- **スタック知見**: コア0メインスタックは「RAM の残り」(静的領域を増やすと黙って縮む)。さらに embassy タスク future はスポーン時に一時スタック構築されるため、serve×2(各12KB)を抱えた net future がスタックを溢れさせた → ヒープ 200→176KB + `Box::pin(serve(...))` で解決
+
 ## 重要な技術的知見
 
 1. **リンカ**: `~/.espressif` の GCC 8.4(2021)は現行 esp-hal のリンカスクリプトと非互換。espup 同梱 GCC 15.2 を使う。リンカ変更後は `touch src/main.rs` で再リンク必須
@@ -113,6 +119,8 @@ POST /api/head/<pan>/<tilt>         度指定 (0-180)
 POST /api/sound/<arpeggio|blip>
 POST /api/volume/<0-100>            (再起動時に永続化)
 POST /api/wifi/<ssid>/<pass>        (再起動時に永続化・適用)
+POST /api/wifi/clear                認証情報クリア(再起動で AP モードへ)
+GET  /                              Wi-Fi 設定ページ / POST /setup (フォーム)
 POST /api/balloon/<text>            UTF-8(日本語可、%エンコード、_→スペース)/ balloon/clear
 POST /api/face                      AVDS v1 バイナリボディ(再起動時に永続化、最大8KB)/ face/reset
 POST /api/reboot                    設定保存 + リセット

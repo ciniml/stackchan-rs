@@ -9,8 +9,10 @@
 //!   follow the finger and suppresses idle behaviour. Core 0.
 //! - [`audio`] — synthesized sounds (boot arpeggio, touch blip) via async I2S DMA, with
 //!   envelope-driven lip sync. Core 0.
-//! - [`net`] — Wi-Fi station + minimal HTTP control API (expression / head / sound).
-//!   Core 0.
+//! - [`net`] — Wi-Fi station + minimal HTTP control API (expression / head / sound),
+//!   or a provisioning access point with a captive setup page when no credentials are
+//!   stored. Core 0.
+//! - [`portal`] — captive-portal DHCP / DNS servers used in AP mode. Core 0.
 //!
 //! Tasks communicate only through [`crate::shared_state::STATE`] (atomics — safe across
 //! cores).
@@ -19,5 +21,6 @@ pub mod audio;
 pub mod idle;
 pub mod input;
 pub mod net;
+pub mod portal;
 pub mod render;
 pub mod servo;
