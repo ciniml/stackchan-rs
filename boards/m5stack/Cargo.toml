@@ -1,66 +1,73 @@
 [package]
 name = "stackchan-m5stack"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Kenta Ida <fuga@fugafuga.org>"]
 repository = "https://github.com/ciniml/m5stack-avatar-rs"
 license = "MIT OR Apache-2.0"
-description = "Rust implementation of Stackchan (ｽﾀｯｸﾁｬﾝ) firmware for M5Stack Core series"
+description = "Rust implementation of Stackchan firmware for M5Stack Core2 / CoreS3"
+
+[features]
+# Pick exactly one of `core2` or `cores3`. The chip-specific features of
+# esp-hal / esp-backtrace / esp-println are pulled in transitively.
+default = ["core2"]
+core2 = [
+  "esp-hal/esp32",
+  "esp-backtrace/esp32",
+  "esp-println/esp32",
+  "esp-rtos/esp32",
+  "esp-radio/esp32",
+  "esp-storage/esp32",
+  "esp-bootloader-esp-idf/esp32",
+]
+cores3 = [
+  "esp-hal/esp32s3",
+  "esp-backtrace/esp32s3",
+  "esp-println/esp32s3",
+  "esp-rtos/esp32s3",
+  "esp-radio/esp32s3",
+  "esp-storage/esp32s3",
+  "esp-bootloader-esp-idf/esp32s3",
+]
 
 [dependencies]
-embedded-graphics = "0.7.1"
-num_enum = { version = "0.6.0", default-features = false, features = [] }
-variant_count = { version = "1.1.0", default-features = false, features = [] }
+embedded-graphics = "0.8"
+embedded-hal = "1.0"
+embedded-hal-bus = "0.3"
+embedded-io-async = "0.7"
+num_enum = { version = "0.7", default-features = false }
+variant_count = { version = "1.1.0", default-features = false }
+
 stackchan-rs = { path = "../.." }
 m5stack-avatar-rs = { path = "../../m5stack-avatar-rs" }
+m5drivers-rs = { path = "../../m5drivers-rs" }
+scs-servo = { path = "../../scs-servo-rs/scs-servo" }
+nb = "1"
+static_cell = "2"
 
-#esp-wifi = { path = "esp-wifi/esp-wifi", features = ["esp32", "wifi"] }
-esp-println = { version = "0.5.0", features = ["esp32"] }
-esp-backtrace = { version = "0.7.0", features = ["esp32", "print-uart", "panic-handler", "exception-handler"] }
-embedded-hal =  { version = "1.0.0-alpha.10" }
-esp32-hal = { version = "0.13.0", features = ["eh1", "async", "embassy-time-timg0"] }
-micromath = "2.0.0"
-embedded-svc = { version = "0.24.0", default-features = false, features = [] }
-# ili9341 = { git = "https://github.com/yuri91/ili9341-rs.git", branch = "master" }
-bitflags = "2.2.1"
-# display-interface = { path = "../../external/display-interface" }
-# display-interface-spi = { path = "../../external/display-interface/spi" }
-# embedded-hal-bus = { git = "https://github.com/rust-embedded/embedded-hal/", rev = "76541e0766257a89d9f300f9b5ee61e4605b883a" }
-embedded-hal-bus = "0.1.0-alpha.0"
-heapless = "0.7.16"
-critical-section = "1.1.1"
-esp-alloc = "0.3.0"
+esp-hal = { version = "1.1", features = ["unstable"] }
+esp-backtrace = { version = "0.19", features = ["panic-handler", "println"] }
+esp-println = { version = "0.17", features = ["log-04"] }
+esp-alloc = "0.10"
+esp-rtos = { version = "0.3", features = ["embassy", "log-04", "esp-radio", "esp-alloc"] }
+esp-storage = "0.9"
+esp-bootloader-esp-idf = "0.5"
+embedded-storage = "0.3"
+esp-radio = { version = "0.18", features = ["wifi"] }
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-net = { version = "0.9", features = ["tcp", "udp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
 
-# [patch.crates-io]
-# embedded-hal = { git = "https://github.com/rust-embedded/embedded-hal/", rev = "bfb276e9218291de34780d9e2b9231aaf3131139" }
-
-# esp-println = { workspace = true, features = [ "esp32" ] }
-# esp-backtrace = { workspace = true, features = ["esp32"] }
-# esp-wifi = { path = "../esp-wifi", features = ["esp32"] }
-# embedded-hal-async = { workspace = true, optional = true }
-
-# [features]
-# default = ["esp32"]
-# esp32 = []
-# async = ["esp-wifi/esp32-async", "bleps/async", "dep:embedded-hal-async", "esp32-hal/async"]
-# embassy-net = ["esp-wifi/embassy-net","dep:embassy-net"]
-# wifi-logs = ["esp-wifi/wifi-logs"]
-# dump-packets = ["esp-wifi/dump-packets"]
-# utils = ["esp-wifi/utils"]
-# enumset = ["esp-wifi/enumset"]
-# embedded-svc = [ "esp-wifi/embedded-svc" ]
-# wifi = ["esp-wifi/wifi"]
-# ble = ["esp-wifi/ble"]
-# phy-enable-usb = ["esp-wifi/phy-enable-usb"]
-# ps-min-modem = ["esp-wifi/ps-min-modem"]
-# esp-now = ["esp-wifi/esp-now"]
+micromath = "2.0"
+critical-section = "1"
+heapless = "0.8"
+log = "0.4"
 
 [profile.release]
-# Explicitly disable LTO which the Xtensa codegen backend has issues
 debug = true
 lto = "off"
+# esp-radio requires opt-level 2 or 3.
 opt-level = 3
 
 [profile.dev]
-# Explicitly disable LTO which the Xtensa codegen backend has issues
 lto = "off"

@@ -1,12 +1,25 @@
+# Pick the target on the command line — features alone can't switch it.
+#
+#   Core2 (default):
+#     cargo +esp run --release --target xtensa-esp32-none-elf
+#
+#   CoreS3 / CoreS3 SE:
+#     cargo +esp run --release --no-default-features --features cores3 \
+#         --target xtensa-esp32s3-none-elf
+
 [target.xtensa-esp32-none-elf]
 runner = "espflash flash --baud 1500000 --flash-freq 40mhz --flash-mode dio --monitor --port /dev/ttyUSB0"
-
-[build]
 rustflags = [
   "-C", "link-arg=-nostartfiles",
-  "-C", "link-arg=-Wl,-Tlinkall.x",
+  "-C", "link-arg=-Tlinkall.x",
 ]
-target = "xtensa-esp32-none-elf"
+
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor"
+rustflags = [
+  "-C", "link-arg=-nostartfiles",
+  "-C", "link-arg=-Tlinkall.x",
+]
 
 [unstable]
 build-std = ["core", "alloc"]
